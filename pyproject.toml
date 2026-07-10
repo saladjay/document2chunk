@@ -1,0 +1,29 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "document2chunk"
+version = "0.1.0"
+description = "Multi-format document parser for RAG: typed document tree IR (PDF/DOCX/OCR, future xlsx/pptx/html)"
+readme = "openspec/project.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [{ name = "document2chunk" }]
+dependencies = [
+    "pydantic>=2.0",
+]
+
+[project.optional-dependencies]
+pdf = ["PyMuPDF>=1.23.0", "pdfplumber>=0.10.0"]
+ocr = ["paddleocr>=2.7.0", "Pillow>=9.0.0"]
+docx = ["lxml>=4.9.0"]
+api = ["fastapi>=0.100.0", "uvicorn>=0.20.0"]
+dev = ["pytest>=7.0", "pytest-cov>=4.0"]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/document2chunk"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]
