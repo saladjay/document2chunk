@@ -7,7 +7,7 @@
 | Session | 分支 | 范围 | 依赖 | 状态 | 任务书 |
 |---|---|---|---|---|---|
 | **① PDF/OCR 族** | `feat/pdf-ocr` | `pdf-extractor` + `pipeline` + `ocr-extractor`（**独占 `pipeline/`**） | ir-model | 待开 | `sessions/session-1-pdf-ocr.md` |
-| **② DOCX/结构/输出族** | `feat/docx-structure-export` | `docx-extractor` + `structure-builder`（含 `assemble`）+ `export` | ir-model | 待开 | `sessions/session-2-docx-structure-export.md` |
+| **② DOCX/结构/输出族** | `feat/docx-structure-export` | `docx-extractor` + `structure-builder`（含 `assemble`）+ `export` | ir-model | ✅ 已交付（4 套测试绿）；`assemble`+`export` 可供 ③ 调用 | `sessions/session-2-docx-structure-export.md` |
 | **③ 工具/集成族** | `feat/debug-api` | `debug/viz` + `api` | ir-model + INTEGRATION 握手 + 各模块就绪（api） | 待开 | `sessions/session-3-debug-api.md` |
 
 **为什么 pdf+ocr 同 session**：二者**共享 `pipeline`**，由 ① 独占编写，避免两方同时改 `pipeline/` 冲突。
