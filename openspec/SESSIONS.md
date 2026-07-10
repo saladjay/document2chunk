@@ -37,6 +37,11 @@
 > 初始为空，各 session 追加。
 
 - `[初始] 协调人 — ir-model 冻结，新增 ExtractionResult/TocEntry 作为 extractor↔structure 握手 — 已实现+测过`
+- `[2026-07-10] ① — Session ① 首版完成（feat/pdf-ocr @547525a）：pipeline + pdf-extractor + ocr-extractor 迁移落地，冒烟测试全绿（ir 仍绿；pipeline 5/5、pdf 8/9、ocr stub 4/4）`
+- `[2026-07-10] ① — 新增共享模块 document2chunk.errors（Document2ChunkError 基类 + InvalidSourceError/ExtractionError/PipelineError/OptionalDependencyError）— ②③ 可按 coding-standards §7 复用此基类；非 INTEGRATION 接口变更，未动 ir-model`
+- `[2026-07-10] ① — element style 现携带 flags（取自 extractors.py 骨架，非旧 parser_pymupdf 生产路径）→ 激活 AutoLevel bold 规则（0.30）。这是相对旧 JSONL 的行为细化，按 designs/002「以 extractors.py 为骨架」指令；如需对齐旧基线可去掉 style.flags`
+- `[2026-07-10] ① — extractors/__init__.py 为各 session 共享边界，本 session 仅放 docstring（与 ② 同文，add/add 合并应自动消解）；pdf/ocr 经 document2chunk.extractors.pdf / .ocr 导入`
+- `[2026-07-10] ① — 真实 PaddleOCR 3.x 集成测试 inconclusive（predict 返回空，疑结果解析与 3.x 实际格式不符）；source 感知逻辑已由 stub 前端覆盖。待真机/真实扫描件验证 _iter_ocr_texts/_iter_layout_regions 解析`
 
 ## 5. 接口变更日志（append-only）
 
