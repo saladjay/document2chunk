@@ -37,9 +37,11 @@
 > 初始为空，各 session 追加。
 
 - `[初始] 协调人 — ir-model 冻结，新增 ExtractionResult/TocEntry 作为 extractor↔structure 握手 — 已实现+测过`
+- `[2026-07-10] session ③ — 新增共享异常模块 document2chunk.exceptions（Document2ChunkError 基类 + UnsupportedFormatError/MissingDependencyError/InvalidSourceError），并从顶层包导出 parse/异常。各 extractor/模块的异常基类请统一从此导入（coding-standards §7）。未改 ir-model / INTEGRATION。— session ①② 可知`
 
 ## 5. 接口变更日志（append-only）
 
 > 格式：`[日期] [session] 改了 INTEGRATION 哪条 — 影响 who — 状态`
 
 - `（暂无）`
+- `[2026-07-10] session ③ — 未改 INTEGRATION；仅新增共享异常模块（见 §4）+ api 调度层（parse/extractor 注册/structure.assemble/export.to_markdown 均按 INTEGRATION §1-§6 惰性接入，缺失抛 MissingDependencyError）— 影响 session ①②：InvalidPdfError/InvalidDocxError 请继承 Document2ChunkError — 待确认`
