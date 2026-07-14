@@ -42,9 +42,13 @@
 - `[2026-07-10] ① — element style 现携带 flags（取自 extractors.py 骨架，非旧 parser_pymupdf 生产路径）→ 激活 AutoLevel bold 规则（0.30）。这是相对旧 JSONL 的行为细化，按 designs/002「以 extractors.py 为骨架」指令；如需对齐旧基线可去掉 style.flags`
 - `[2026-07-10] ① — extractors/__init__.py 为各 session 共享边界，本 session 仅放 docstring（与 ② 同文，add/add 合并应自动消解）；pdf/ocr 经 document2chunk.extractors.pdf / .ocr 导入`
 - `[2026-07-10] ① — 真实 PaddleOCR 3.x 集成测试 inconclusive（predict 返回空，疑结果解析与 3.x 实际格式不符）；source 感知逻辑已由 stub 前端覆盖。待真机/真实扫描件验证 _iter_ocr_texts/_iter_layout_regions 解析`
+- `[2026-07-10] session ③ — 新增共享异常模块 document2chunk.exceptions（Document2ChunkError 基类 + UnsupportedFormatError/MissingDependencyError/InvalidSourceError），并从顶层包导出 parse/异常。各 extractor/模块的异常基类请统一从此导入（coding-standards §7）。未改 ir-model / INTEGRATION。— session ①② 可知`
+- `[2026-07-13] 集成 — ⚠️ 待协调人裁定：① 的 document2chunk.errors 与 ③ 的 document2chunk.exceptions 存在两个 Document2ChunkError 基类（重复）。集成 demo 两者并存各自导入可跑；正式需合并为单一异常模块（倾向保留 ③ 的 exceptions + 顶层导出，① 的 errors 内容并入，或反之）。`
+
 
 ## 5. 接口变更日志（append-only）
 
 > 格式：`[日期] [session] 改了 INTEGRATION 哪条 — 影响 who — 状态`
 
 - `（暂无）`
+- `[2026-07-10] session ③ — 未改 INTEGRATION；仅新增共享异常模块（见 §4）+ api 调度层（parse/extractor 注册/structure.assemble/export.to_markdown 均按 INTEGRATION §1-§6 惰性接入，缺失抛 MissingDependencyError）— 影响 session ①②：InvalidPdfError/InvalidDocxError 请继承 Document2ChunkError — 待确认`
