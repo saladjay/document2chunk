@@ -17,7 +17,7 @@
 
 `document-to-chunk` 给出了 docx 的另一条路：**类型化文档树（AST）**，lxml 直读、`outlineLvl` 确定性标题、章节树。
 
-**仲裁结论（已与产品方对齐，见 `澄清1.md`）**：以「类型化文档树」为**规范 IR**，它同时容纳 span（PDF/OCR 的视觉重建产物）与 AST（docx 的语义直读产物）。本仓 `document2chunk` 为迁移目标。
+**仲裁结论（已与产品方对齐，见 `澄清1.md`）**：以「类型化文档树」为**规范 IR**，它同时容纳 span（可编辑 PDF 的视觉重建产物）、AST（docx 的语义直读产物）与结构化 markdown（OCR 服务输出，见 D11）。本仓 `document2chunk` 为迁移目标。
 
 ---
 
@@ -27,7 +27,7 @@
 
 - G1 定义一套**源无关**的规范文档树 IR，作为所有格式的统一输出。
 - G2 PDF（可编辑）/ DOCX / OCR 三源先落地；预留 xlsx/pptx/html 的 extractor 接口。
-- G3 复用现有 PDF span 管线投资，将其**降格为「PDF/OCR 结构重建前端」**，产出喂给 IR。
+- G3 复用现有 PDF span 管线投资，将其**降格为「可编辑 PDF 结构重建前端」**，产出喂给 IR（OCR 不再走 span 管线，见 D11）。
 - G4 单体库（`parse()` 入口）+ 可选 HTTP（FastAPI `/parse`）。
 
 **非目标**
@@ -44,7 +44,7 @@
 | # | 决策 | 理由 |
 |---|---|---|
 | D1 | 规范 IR = 类型化文档树（非扁平 span 列表） | 业界标杆 Docling 以类型化 `DocItem` 层次支撑 PDF/DOCX/PPTX/HTML；树模型天然适配多格式 |
-| D2 | span 管线降为 PDF/OCR 结构重建前端 | 保住算法投资（BodyAnalysis/AutoLevel/TOCAnalysis），但退出顶层契约 |
+| D2 | span 管线降为**可编辑 PDF** 结构重建前端 | 保住算法投资（BodyAnalysis/AutoLevel/TOCAnalysis），仅服务可编辑 PDF；OCR 改走远程服务（D11） |
 | D3 | docx 用 lxml 直读 OpenXML（弃 python-docx） | 减依赖、可读 outlineLvl 与样式继承链、确定性标题 |
 | D4 | 标题层级 H1–9（修正旧管线 H1–4 的设计错误） | docx 由 outlineLvl(0–8) 确定；PDF 启发式可靠到 H1–4 但不强制全局压平 |
 | D5 | 结构与出处分离：`provenance` 为可选节点元数据 | 统一 page 型源（PDF/OCR 有 bbox/page）与 flow 型源（docx 无） |
@@ -53,6 +53,7 @@
 | D8 | 规范输出 = LogicalDocument JSON(AST)；JSONL 仅作兼容导出 | 树形便于下游切片/检索；JSONL 兼容旧 PDF 接口 |
 | D9 | 单体库 + 可选 HTTP，不做微服务 | 旧微服务只因选型期依赖冲突；包能共存即不拆服务 |
 | D10 | extractor 间禁止横向依赖，只能依赖 `ir-model` | 保证各格式可独立开发/并行（Qoder 做 pdf，Claude 做其余） |
+| D11 | OCR 后端 = 远程 PaddleOCR 服务（PP-OCRv6 / PaddleOCR-VL / Unlimited-OCR），markdown→IR；**弃本地 paddleocr** | 强模型直接给结构化 markdown（表格/公式/图片），OCR 归入「结构化源」家族（同 docx/html），去掉 bold/字号估算降级；span 管线只留可编辑 PDF。服务见 `D:\project\server\PaddleOCR三件套使用文档.md` |
 
 ---
 
@@ -63,7 +64,7 @@
 - **双视图**：`content`（扁平阅读序列，导出/序列化用）+ `section_tree`（章节层级，切片/检索用）并存，由同一批节点支撑。
 - **span = RunNode**：PDF 的 span、docx 的 `<w:r>` 统一成 `RunNode`；PDF span 的 bbox 落在 `RunNode.provenance.bbox`。
 - **类型化节点**：pydantic v2 判别联合（discriminated union），以 `type` 字段判别。
-- **provenance 可选**：PDF/OCR 节点携带；docx 节点全空。
+- **provenance 可选**：PDF 节点携带；OCR 视服务 `layoutParsingResults`（可选）；docx 节点全空。
 - **稳定 ID**：`block_000001` / `sec_000001` / `run_000001`，跨格式一致。
 
 ### 4.2 数据模型（pydantic v2 伪码）
@@ -252,7 +253,7 @@ class LogicalDocument(BaseModel):
 | 源 | 前端 extractor | 关键映射 | provenance |
 |---|---|---|---|
 | **PDF（可编辑）** | PyMuPDF + span 管线（9 Stage）→ elements | heading→HeadingNode(level), paragraph→ParagraphNode, table→TableNode, list/image→对应 | page_index + bbox ✓（span→RunNode.provenance） |
-| **PDF（扫描）/ 图片** | PaddleOCR + 版面分析 | 同上；字号估算、bold 失效（降级） | page_index + bbox ✓ + confidence |
+| **PDF（扫描）/ 图片 / 复杂版式** | 远程 PaddleOCR 服务（PP-OCRv6/VL/Unlimited）→ markdown | markdown→IR：标题/表格/公式/图片/列表 → 对应节点（共享 markdown→IR 解析器） | `layoutParsingResults` 有 box 则带 bbox/page，否则 None |
 | **DOCX** | lxml 直读 OpenXML | `outlineLvl`/pStyle→HeadingNode(1–9), `<w:p>`→ParagraphNode, `<w:tbl>`→TableNode(colspan/rowspan), 列表→ListNode, drawing→ImageNode；TOC 域识别→独立处理 | **无**（D6） |
 | **XLSX**（未来） | openpyxl | sheet→SectionNode, 区域→TableNode/ParagraphNode | 无 |
 | **PPTX**（未来） | python-pptx | slide→SectionNode(L1), 文本框→Heading/Paragraph, 表格/图片→对应 | slide_index |
@@ -274,7 +275,7 @@ class LogicalDocument(BaseModel):
              ▼                     ▼                     ▼
    ┌──────────────────┐  ┌──────────────────┐  ┌──────────────────┐
    │ pdf-extractor    │  │ docx-extractor   │  │ ocr-extractor    │
-   │ (内含 pipeline)  │  │                  │  │ (内含 pipeline)  │
+   │ (内含 pipeline)  │  │                  │  │ (服务+md→IR)    │
    └────────┬─────────┘  └────────┬─────────┘  └────────┬─────────┘
             │                     │                     │
             └──────────┬──────────┴──────────┬──────────┘
@@ -291,7 +292,7 @@ class LogicalDocument(BaseModel):
 
 **依赖铁律**：
 - 方向：`api → orchestrator → {extractors, structure-builder, export} → ir-model`。
-- extractor 之间**禁止横向依赖**（D10）；公共 span 处理逻辑放 `pipeline` 包，由 pdf/ocr extractor 各自引用。
+- extractor 之间**禁止横向依赖**（D10）；span 管线（`pipeline` 包）只由 **pdf-extractor** 引用（OCR 不再用）；**markdown→IR 解析器**（`parsers.markdown`）由 ocr-extractor 与未来 html/markdown-extractor 共享。
 - `ir-model` 是零依赖（仅 pydantic）的叶子契约，最先冻结、最稳定。
 
 ---
@@ -310,9 +311,10 @@ class LogicalDocument(BaseModel):
 
 **新增**：
 - `ir-model`（全新，契约）。
-- 各 extractor → IR 的映射层（span element → BlockNode）。
+- 各 extractor → IR 的映射层（pdf：span element → BlockNode；ocr：markdown → IR）。
 - `structure-builder`（独立出章节树构建，原内嵌于管线）。
 - `export`（统一导出）。
+- `ocr-extractor`：远程 PaddleOCR 服务客户端（`OcrServiceClient`）+ 共享 `markdown→IR` 解析器（OCR 不复用 span 管线，见 D11）。
 
 > 详细复用/重写清单见 `specs/pdf-extractor/spec.md` 的「复用边界」附录（任务 #5、#6 产出）。
 
@@ -324,7 +326,7 @@ class LogicalDocument(BaseModel):
 |---|---|---|
 | span 管线输出映射到 IR 时信息错配 | pdf-extractor 产出不符合契约 | ir-model spec 给出 element→BlockNode 逐字段映射表；Qoder 按表实现 |
 | docx outlineLvl 缺失的文档（仅粗体大字号） | 标题识别率下降 | 启发式兜底（可配置），置信度低时标正文而非猜层级 |
-| OCR 字号估算误差大 | OCR 标题分级不稳 | 版面分析标签（title/text）作主信号，字号仅辅助 |
+| OCR 依赖远程服务可用性（D11） | 服务宕机 / 模型切换延迟 | `OcrServiceError` + 重试 + 超时 + 健康检查；模型未就绪时明确报错 |
 | 双视图（content + section_tree）一致性 | 树与扁平序列不同步 | section_tree 由 content 单遍构建（structure-builder 唯一入口），禁止旁路修改 |
 | 未来 xlsx/pptx 的「页/表」概念与树不完全契合 | extractor 映射需约定 | 现仅占位；落地时各写一份 mapping 约定，不改 ir-model 核心 |
 
@@ -366,7 +368,7 @@ def to_jsonl(doc: LogicalDocument) -> str: ...                             # 兼
 ### 9.4 调试与可视化（debug 模块）
 
 - **管线追踪**：`Pipeline(debug_dir=...)` 每 Stage 落盘 `{NN}_{name}.json`（schema 见 `specs/debug` §2；归属 `pipeline`，随 pdf-extractor 迁移）。
-- **可视化**：`visualize(doc, source_path?, out_dir, ...)` 把 `LogicalDocument` 渲染为 **bbox 叠加图**（PDF/OCR，有页面底图）或 **结构树**（docx，无 bbox）；`visualize_debug_dir(...)` 做**过程调试**（每 stage×page 一图 + 阶段对比图，复刻旧库）。详见 `specs/debug/spec.md`。
+- **可视化**：`visualize(doc, source_path?, out_dir, ...)` 把 `LogicalDocument` 渲染为 **bbox 叠加图**（PDF 有页面底图；OCR 视服务 `layoutParsingResults`）或 **结构树**（docx / 无 bbox 的 OCR 结果）；`visualize_debug_dir(...)` 做**过程调试**（每 stage×page 一图 + 阶段对比图，复刻旧库，仅 PDF span 管线）。详见 `specs/debug/spec.md`。
 
 ---
 

@@ -1,4 +1,4 @@
-# Session ① 任务书 — PDF/OCR 族（独占 pipeline）
+# Session ① 任务书 — PDF 族（独占 pipeline；OCR 已按 D11 移出）
 
 > 你是一个并行 Claude 会话。本文件自包含，无需其他对话上下文。
 > 分支：`feat/pdf-ocr`。状态：待开。
@@ -7,7 +7,7 @@
 
 - `pdf-extractor`（可编辑 PDF → IR）
 - `pipeline`（span 处理引擎，9-Stage + SplitPipeline）—— **你独占**，全仓库只有你写 `src/document2chunk/pipeline/`
-- `ocr-extractor`（扫描件/图片 → IR，复用 pipeline）
+- ~~`ocr-extractor`~~：**已移出本 session**（D11 改为远程 PaddleOCR 服务 + markdown→IR，不再复用 pipeline；重做见 `specs/ocr-extractor` 与 `tasks.md` §5）
 - `pipeline` 的 `debug_dir` 落盘机制（供 Session ③ debug 消费）
 
 ## 开工前必读（按顺序）
@@ -48,7 +48,7 @@ def extract(source, *, options=None) -> ExtractionResult  # INTEGRATION §2
    - 阈值/正则**原样保留**（designs/003 §4 表）。
 2. **PyMuPDFSpanExtractor 补表格双引擎**：合并 `parser_pymupdf.py` 的 pdfplumber 优先 + PyMuPDF 兜底 + `_bbox_overlap`(提到模块级) + `sort_key`。
 3. **新增 element(dict) → BlockNode 映射层**（designs/003 §8 映射表）：span→RunNode(provenance.bbox)、heading/title→HeadingNode、table→TableNode、image→ImageNode、toc_*/page_number 按规约处理。
-4. **ocr-extractor**：PaddleOCR + 版面分析，source 感知降级（title 标签主信号、bold 失效降权、字号估算）；复用 pipeline 的 Classification/AutoLevel 但走 source 分支。
+4. ~~**ocr-extractor**（PaddleOCR+版面分析）~~：**已作废**（D11）。OCR 重做走远程服务路线，不再属本 session；pipeline 只服务可编辑 PDF。
 5. **debug_dir 落盘**：随 pipeline 迁移，schema 按 INTEGRATION §4。
 6. **冒烟测试**：fixtures PDF → `LogicalDocument` 往返；heading 数量/层级与旧 JSONL 回归一致。
 
@@ -56,12 +56,12 @@ def extract(source, *, options=None) -> ExtractionResult  # INTEGRATION §2
 
 - 可编辑 PDF → `LogicalDocument`（`source_type=pdf`，节点带 provenance）。
 - `model_dump_json` 可往返；`visualize_debug_dir` 能消费你的 debug_dir（交给 Session ③ 验）。
-- 扫描 PDF/图片 → `LogicalDocument`（`source_type=ocr`）。
+- ~~扫描 PDF/图片 → ocr~~：已移出（D11，远程服务路线）。
 - ir-model 冒烟测试仍绿（你没改它）。
 
 ## 协作注意
 
-- **你独占 `pipeline/`**；Session ②③ 不会动它。ocr 也归你（复用 pipeline）。
+- **你独占 `pipeline/`**；Session ②③ 不会动它。~~ocr 也归你~~：OCR 已按 D11 移出（远程服务路线，独立重做）。
 - **禁止改 `ir-model`**。需要扩展 → 在 `SESSIONS.md §4` 提，协调人加。
 - debug_dir schema 是与 Session ③ 的契约，**勿擅改**；要改先在 `SESSIONS.md §5` 登记。
 - `parse()` 不归你（Session ③）；你只提供 `extract()`。

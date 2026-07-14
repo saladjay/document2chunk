@@ -46,7 +46,8 @@ def parse(
 
 - **必须**：不支持的格式 → `UnsupportedFormatError`。
 - **必须**：文件损坏/缺失关键部分 → 对应 extractor 抛明确异常（`InvalidDocxError`/`InvalidPdfError`），不静默吞错。
-- **必须**：可选依赖（PyMuPDF/PaddleOCR/lxml）缺失 → 提示安装对应 extra（`pip install document2chunk[pdf]` 等）。
+- **必须**：可选依赖（PyMuPDF/lxml/httpx）缺失 → 提示安装对应 extra（`pip install document2chunk[pdf|docx|ocr]`）。
+- **必须**：OCR 走**远程 PaddleOCR 服务**（D11）；服务不可达/模型未就绪 → `OcrServiceError`（见 `specs/ocr-extractor` §7）。endpoint/token/默认模型由配置注入，**禁止硬编码 token**。
 
 ## 4. HTTP（FastAPI）
 

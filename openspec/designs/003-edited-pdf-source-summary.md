@@ -100,6 +100,7 @@ G = `is_global=True`（合并所有页元素跑一次）；L = 逐页。`SplitPi
 **pdf_detect.py**：`detect_pdf_type` → editable/scanned/mixed（`DOCUMENT_RATIO=0.7`）；页面级：大图(coverage≥0.5)→scanned，否则文本≥30字→editable，否则 coverage≥0.3→scanned，否则 empty。删 fitz 回退。
 
 **config.py**：在用 `IMAGE_MIN_AREA=1000`/`IMAGE_FORMAT=png`/`PAGE_NUMBER_PATTERNS`/`PAGE_NUMBER_THRESHOLD_RATIO=0.7`/`PDF_DPI=200`(OCR 栅格)。死代码 `get_layout_kwargs`/`get_ocr_kwargs` + 9 个 PaddleOCR 常量（OCR 未集成）。
+> 注：新库 OCR 改走远程服务（designs/001 D11），本地 `paddleocr` 与 `PDF_DPI=200` 栅格化**均不迁入**；`pipeline` 只服务可编辑 PDF。
 > ⚠️ **DPI 纠正**：`LAYOUT_DPI=136`/`PDF_DPI=72` **不在 config.py**，而在 `layout_filter.py:27-28`（版面坐标 136→PDF 72pt 换算）。config 的 `PDF_DPI=200` 是 OCR 栅格化，**两套量纲不可合并**。
 
 ## 8. element(dict) → BlockNode 映射（对齐 `document2chunk.ir`）

@@ -16,11 +16,11 @@ Tier 1  仅依赖 ir-model（彼此无依赖 → 可全并行）
           └── debug/viz                  ← 可视化（+ 可选 pipeline debug_dir 契约）
           │
 Tier 2  依赖 Tier 1
-          ├── ocr-extractor   ← 复用 pipeline（须与 pdf 协调 pipeline 归属）
+          ├── ocr-extractor   ← 远程 PaddleOCR 服务 + markdown→IR（D11，不复用 pipeline）
           └── api             ← 集成层（须等所有 extractor + structure + export）
 ```
 
-**关键**：Tier 1 五个模块**两两无依赖**，是并行的主战场。`pipeline` 是 pdf 与 ocr 的**共享代码**，必须由**一方独占**写，另一方依赖——否则冲突。
+**关键**：Tier 1 各模块**两两无依赖**，是并行的主战场。`pipeline` 只服务 pdf-extractor（OCR 已按 D11 改远程服务，不再用 pipeline）。
 
 ## 2. 推荐会话切分（3 个并行 Claude）
 
@@ -28,11 +28,11 @@ Tier 2  依赖 Tier 1
 
 | Session | 负责 | 依赖 | 源码 |
 |---|---|---|---|
-| **① PDF/OCR 族** | `pdf-extractor` + `pipeline` + `ocr-extractor`（独占 `pipeline/`） | ir-model | 深度参考 `doc-paddle-ocr` |
+| **① PDF 族** | `pdf-extractor` + `pipeline`（独占 `pipeline/`）；~~ocr-extractor~~ 已按 D11 移出（远程服务路线） | ir-model | 深度参考 `doc-paddle-ocr` |
 | **② DOCX/结构/输出族** | `docx-extractor` + `structure-builder` + `export` | ir-model | 全新（lxml） |
 | **③ 工具/集成族** | `debug/viz` + `api` | ir-model + 各模块握手契约 | 复刻 `visualize_pipeline.py` |
 
-把 pdf+ocr 放同一个 session（①），因为它们**共享 `pipeline`**——由 ① 独占编写，避免两方同时改 `pipeline/` 冲突。`api` 放 ③ 最后集成。
+原把 pdf+ocr 同 session 是因共享 `pipeline`；OCR 已按 D11 改远程服务、不再用 pipeline，故 ocr-extractor **独立重做**（assignee 待定）。`api` 放 ③ 最后集成。
 
 ## 3. 协作机制（三层，会话间"通信"靠它）
 

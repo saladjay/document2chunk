@@ -35,7 +35,7 @@
 ### 2.4 出处（provenance）
 
 - **必须**：`provenance` 为 `Optional`。
-- **必须**：PDF/OCR 节点携带 `source_type`、`page_index`、`bbox`（OCR 另带 `confidence`）。
+- **必须**：PDF 节点携带 `source_type`、`page_index`、`bbox`；OCR 节点 `source_type="ocr"`，`page_index`/`bbox`/`confidence` 视远程服务 `layoutParsingResults` 而定（可选，见 designs/001 D11）。
 - **禁止**：docx 节点携带 `bbox` / `page_index`（designs/001 D6：docx 版面信息退出范围）。
 - **必须**：`bbox` 为 `[x0, y0, x1, y1]` 四浮点数；`confidence` 取值 0.0–1.0。
 

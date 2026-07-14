@@ -44,7 +44,7 @@
 | `main.py`、`model_catalog.py` | 死代码 |
 | `presets.py: full_pipeline/simple_pipeline` | 未用预设 |
 | `parsers/parser_docling/pdfplumber/pymupdf4llm/unstructured.py` | 非主解析器（对比用），暂不迁 |
-| `extractors.py: DocxSpanExtractor`、`OcrSpanExtractor` | docx 改 lxml（Claude 做）；OCR 归 ocr-extractor（Claude 做）。**不进 pdf-extractor** |
+| `extractors.py: DocxSpanExtractor`、`OcrSpanExtractor` | docx 改 lxml；OCR 归 ocr-extractor（**远程服务路线 D11**，不复用 span 管线）。**均不进 pdf-extractor** |
 | 根目录散落脚本（analyze_layout/batch_*/debug_*/example_*/ocr_test_fix/match_and_ocr 等） | 实验/调试脚本，非核心 |
 
 ## 4. 工作量估计（pdf-extractor，供 Qoder 参考）

@@ -33,12 +33,15 @@
 - [ ] 4.5 TOC 域识别 → 独立处理
 - [ ] 4.6 fixtures docx 测试（Word/WPS/中文样式名）
 
-## 5. ocr-extractor（Claude）
+## 5. ocr-extractor（Claude）—— 重做（D11：远程服务 + markdown→IR）
 
-- [ ] 5.1 PDF→图片渲染 + PaddleOCR + 版面分析
-- [ ] 5.2 字号估算 + 正文基准众数
-- [ ] 5.3 pipeline source 感知降级（title 标签主信号、bold 失效）
-- [ ] 5.4 scanned/mixed PDF 路由 + 多页 provenance
+> 取代 session ① 旧 span 版。后端 = 远程 PaddleOCR 服务（见 `D:\project\server\PaddleOCR三件套使用文档.md`）。
+
+- [ ] 5.1 `OcrServiceClient`（HTTP + token + 模型切换 + 健康检查，endpoint/token 配置注入）
+- [ ] 5.2 模型选择（长文档→Unlimited / 复杂版式→VL / 公文→PP-OCRv6；可由 options 覆盖，默认 VL）
+- [ ] 5.3 共享 `markdown→IR` 解析器（标题/表格/公式/图片/列表 → 节点；未来 html 复用）
+- [ ] 5.4 provenance 从 `layoutParsingResults` 取（无则 None）；scanned/mixed PDF 经 pdf_detect 路由
+- [ ] 5.5 `OcrServiceError` + 重试/超时；fixtures（mock 服务响应）测试
 
 ## 6. export（Claude）
 
@@ -66,4 +69,4 @@
 - [ ] 9.3 （Claude）`draw_structure_tree`（章节树缩进视图，docx 主用）
 - [ ] 9.4 （Claude）`generate_stage_comparison`（阶段对比条形图）
 - [ ] 9.5 （Claude）`visualize(doc, ...)` / `visualize_debug_dir(...)` / `visualize_batch(...)` + CLI
-- [ ] 9.6 源感知：PDF/OCR 叠加、docx 结构树、PyMuPDF 缺失降级
+- [ ] 9.6 源感知：PDF 叠加（有页面底图）；OCR 视服务 layout 结果（有 box 则叠加，否则结构树）；docx 结构树；PyMuPDF 缺失降级
