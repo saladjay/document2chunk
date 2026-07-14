@@ -16,9 +16,9 @@ from __future__ import annotations
 
 from collections import Counter
 
-from document2chunk.errors import InvalidSourceError
+from document2chunk.exceptions import InvalidSourceError
 from document2chunk.extractors._mapping import elements_to_blocks
-from document2chunk.extractors._pdf_detect import detect_pdf_type
+from document2chunk.pipeline.pdf_detect import detect_pdf_type
 from document2chunk.extractors.pdf import PdfExtractor, PyMuPDFSpanExtractor
 from document2chunk.ir import (
     ExtractionResult,

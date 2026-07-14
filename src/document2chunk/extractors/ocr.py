@@ -21,7 +21,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Optional, Protocol, Sequence, Union
 
-from document2chunk.errors import InvalidSourceError
+from document2chunk.exceptions import InvalidSourceError
 from document2chunk.extractors._mapping import elements_to_blocks
 from document2chunk.ir import (
     DocumentMetadata,

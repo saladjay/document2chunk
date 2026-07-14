@@ -22,3 +22,16 @@ class MissingDependencyError(Document2ChunkError):
 
 class InvalidSourceError(Document2ChunkError):
     """源文件损坏 / 缺失关键部分（fast fail）。"""
+
+
+class ExtractionError(Document2ChunkError):
+    """extractor 提取过程中的非局部异常（局部失败应 WARN + 跳过，不抛此异常）。"""
+
+
+class PipelineError(Document2ChunkError):
+    """span 管线编排异常。"""
+
+
+# 历史别名：与 MissingDependencyError 同义（① 早期命名），保留向后兼容。
+OptionalDependencyError = MissingDependencyError
+
