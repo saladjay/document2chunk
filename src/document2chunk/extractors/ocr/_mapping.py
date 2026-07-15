@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import base64
 import os
+import re
 from typing import Any, Dict, List, Optional, Tuple
 
 from lxml import html as lxml_html
@@ -19,10 +20,12 @@ from document2chunk.ir import (
     FormulaNode,
     HeadingNode,
     ImageNode,
+    InlineFormulaNode,
     ListItemNode,
     ListNode,
     ParagraphNode,
     Provenance,
+    RunNode,
     SourceType,
     TableCellNode,
     TableRowNode,
@@ -30,6 +33,25 @@ from document2chunk.ir import (
 )
 
 DROP_LABELS = {"page_number", "header", "footer", "number"}
+
+# 行内公式 \( ... \)（服务实测输出格式）
+_INLINE_FORMULA_RE = re.compile(r"\\\((.+?)\\\)", re.S)
+
+
+def _text_to_runs(text: str, idc: "_Idc") -> List[Any]:
+    """把段落文本按 \(..\) 拆成 RunNode / InlineFormulaNode 交替的 runs。"""
+    runs: List[Any] = []
+    pos = 0
+    for m in _INLINE_FORMULA_RE.finditer(text):
+        if m.start() > pos:
+            runs.append(RunNode(id=idc.run(), text=text[pos:m.start()]))
+        runs.append(InlineFormulaNode(id=idc.run(), latex=m.group(1).strip()))
+        pos = m.end()
+    if pos < len(text):
+        runs.append(RunNode(id=idc.run(), text=text[pos:]))
+    if not runs:
+        runs.append(RunNode(id=idc.run(), text=text))
+    return runs
 
 
 class _Idc:
@@ -100,7 +122,10 @@ def _element_to_node(
         )
 
     if kind == "paragraph":
-        return ParagraphNode(id=idc.block(), text=el["text"], provenance=prov)
+        text = el["text"]
+        return ParagraphNode(
+            id=idc.block(), text=text, runs=_text_to_runs(text, idc), provenance=prov
+        )
 
     if kind == "formula":
         return FormulaNode(id=idc.block(), latex=el.get("latex"), provenance=prov)

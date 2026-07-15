@@ -10,9 +10,12 @@ from document2chunk.extractors.ocr import OcrExtractor
 from document2chunk.extractors.ocr._mapping import _Idc, build_page_blocks
 from document2chunk.extractors.ocr._markdown import parse_markdown
 from document2chunk.ir import (
+    FormulaNode,
     HeadingNode,
     ImageNode,
+    InlineFormulaNode,
     ParagraphNode,
+    RunNode,
     SourceType,
     TableNode,
 )
@@ -133,6 +136,28 @@ def test_multipage_pdf_chunking():
     assert pages == {0, 1}, f"应处理两页，实际 page_index: {pages}"
 
 
+def test_block_and_inline_formulas():
+    """块 \\[ .. \\] → FormulaNode；行内 \\( .. \\) → ParagraphNode.runs 里的 InlineFormulaNode。"""
+    md = "# 公式示例\n\n\\[\nE = mc^2\n\\]\n\n行内 \\(x = 1\\) 公式。\n"
+    prl = [
+        {"block_label": "title", "block_order": 0, "block_content": "公式示例", "block_bbox": [0, 0, 10, 10]},
+        {"block_label": "equation", "block_order": 1, "block_content": "E = mc^2", "block_bbox": [0, 20, 10, 30]},
+        {"block_label": "text", "block_order": 2, "block_content": "行内...", "block_bbox": [0, 40, 10, 50]},
+    ]
+    blocks = build_page_blocks(md, prl, {}, 0, _Idc(), None, False, [0])
+    assert len(blocks) == 3
+    # 块公式
+    assert isinstance(blocks[1], FormulaNode)
+    assert blocks[1].latex == "E = mc^2"
+    assert blocks[1].provenance.bbox == [0, 20, 10, 30]  # equation 块 bbox
+    # 行内公式：段落 runs = Run / InlineFormula / Run
+    p = blocks[2]
+    assert isinstance(p, ParagraphNode)
+    kinds = [type(r).__name__ for r in p.runs]
+    assert kinds == ["RunNode", "InlineFormulaNode", "RunNode"], kinds
+    assert p.runs[1].latex == "x = 1"
+
+
 if __name__ == "__main__":
     for fn in [
         test_parse_markdown_elements,
@@ -142,6 +167,7 @@ if __name__ == "__main__":
         test_drop_page_number_label,
         test_extractor_with_mock,
         test_multipage_pdf_chunking,
+        test_block_and_inline_formulas,
     ]:
         fn()
         print("ok:", fn.__name__)

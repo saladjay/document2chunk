@@ -51,6 +51,15 @@ def parse_markdown(md: str) -> List[Dict[str, Any]]:
             elements.append({"kind": "formula", "latex": m.group(1).strip()})
             continue
 
+        # 块公式 \[ ... \]（服务实测输出格式，可跨多行）
+        if b[:2] == "\\[":
+            latex = b[2:]
+            if latex.endswith("\\]"):
+                latex = latex[:-2]
+            flush()
+            elements.append({"kind": "formula", "latex": latex.strip()})
+            continue
+
         m = _IMAGE_LINE_RE.match(b)
         if m:
             flush()

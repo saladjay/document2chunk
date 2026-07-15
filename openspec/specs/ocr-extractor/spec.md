@@ -47,7 +47,7 @@
 - **表格：HTML `<table><tr><td>..</td></tr></table>`**（**非** GFM pipe；`parsing_res_list` 的 `table` 块 `block_content` 即此 HTML）。
 - 图片：`![alt](filename)`，`filename` 是 `images` dict 的键。
 - 列表：`- `（无序）、`1)`（有序，**非标准** `1.`，解析器须兼容）。
-- 公式：服务宣称 KaTeX `$..$`/`$$..$$`（未实测到，按此兜底）。
+- 公式：**块级 `\[..\]`**（`parsing_res_list` 标签 `equation`，带 bbox）→ `FormulaNode`；**行内 `\(..\)`**（段落内）→ `InlineFormulaNode`（ir-model F18）。LaTeX 内容（注：OCR 公式可能带空格噪声，如 `K V \_ h e a d s`，解析层原样捕获）。
 - 段落：纯文本，空行分隔。
 
 ## 3. 处理流程（方案 A：markdown 建结构 + parsing_res_list 补 bbox）
@@ -77,7 +77,8 @@ ExtractionResult ──▶ structure.assemble ──▶ LogicalDocument
 | `table` | `TableNode` | 解析 `block_content` 的 HTML `<table>` |
 | `image` / `figure` | `ImageNode` | image_id=markdown ref；二进制从 `images` 取 |
 | `image_caption` | `ParagraphNode` | 作为图片说明段落 |
-| `formula` | `FormulaNode` | latex/text |
+| `formula` / `equation` | `FormulaNode` | 块公式（markdown `\[..\]`）；latex 取自内容 |
+| 行内 `\(..\)` | 段落 `ParagraphNode.runs` 内 `InlineFormulaNode` | 行内公式（F18） |
 | `page_number`/`header`/`footer`/`number` | （丢弃） | 不进 content |
 
 ### 3.2 标题层级

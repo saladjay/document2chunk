@@ -11,6 +11,7 @@ from document2chunk.ir.models import (
     HeadingNode,
     HyperlinkNode,
     ImageNode,
+    InlineFormulaNode,
     InlineNode,
     ListItemNode,
     ListNode,
@@ -38,6 +39,7 @@ __all__ = [
     # inline
     "RunNode",
     "HyperlinkNode",
+    "InlineFormulaNode",
     "InlineNode",
     # blocks
     "BlockNode",
