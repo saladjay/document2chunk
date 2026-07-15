@@ -47,6 +47,8 @@
 - `[2026-07-13] 集成 — ⚠️ 待协调人裁定：① 的 document2chunk.errors 与 ③ 的 document2chunk.exceptions 存在两个 Document2ChunkError 基类（重复）。集成 demo 两者并存各自导入可跑；正式需合并为单一异常模块。→ 已于 integration 修复（保留 exceptions，errors 内容并入，OptionalDependencyError 作别名，errors.py 删除）`
 - `[2026-07-14] 协调人 — **D11**：OCR 后端改为远程 PaddleOCR 服务（PP-OCRv6/VL/Unlimited）→ markdown→IR，**弃本地 paddleocr**；span 管线只留可编辑 PDF。理由：强模型直接给结构化 markdown（表格/公式/图片），OCR 归入结构化源家族，去 bold/字号估算降级。服务见 D:\project\server\PaddleOCR三件套使用文档.md — 文档已落（ocr-extractor spec / designs/001 / tasks §5 / pyproject）`
 - `[2026-07-15] 集成 → main 合并 — integration 的 pipeline + pdf-extractor 有效保留；① 早期 `extractors/ocr.py`（本地 paddleocr span 版）**按 D11 已过时**，待按「远程 PaddleOCR 服务 + markdown→IR」重做（新增 `parsers.markdown` + `OcrServiceClient`）。合并未删 ocr.py，留作参考/渐进替换`
+- `[2026-07-15] ① — **`feat/ocr-remote` 废弃、不合并**：本会话并行重做的 D11 ocr（`parsers.markdown` + `extractors/_ocr_service.OcrServiceClient` + `extractors/ocr.py`，变量名 `PANDOCR_*`）与另一分支 `feat/ocr`（b5cab9f/2ee7954/077aac1，子包 `extractors/ocr/`：`_client/_markdown/_mapping/_chunker/_config/_exceptions/extractor.py` + F18 `InlineFormulaNode`）**重复**；后者更全（含公式/重试/`DOCUMENT2CHUNK_OCR_*` 配置）且已在 main。`feat/ocr-remote` 留 origin 作参考、不入 main；后续以 main 的 `extractors/ocr/` 为唯一 D11 实现`
+- `[2026-07-15] ①（`feat/ocr-envconfig`）— 给 main 的 `extractors/ocr/_config.py` 加 `.env` 自动加载（`_load_dotenv`，从 cwd/上级 `.env` 读 `DOCUMENT2CHUNK_OCR_*`，真实环境变量优先；零依赖）+ `.gitignore` 忽略 `.env` + `.env.example` 模板。用法：`cp .env.example .env` 填 token，无需每次 export。未动他们在改的 `_chunker.py`/`_mapping.py``
 
 ## 5. 接口变更日志（append-only）
 
