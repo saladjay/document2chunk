@@ -24,7 +24,7 @@ from typing import Any, Optional, Union
 
 from document2chunk.errors import InvalidSourceError, OptionalDependencyError
 from document2chunk.extractors._mapping import elements_to_blocks
-from document2chunk.extractors._pdf_detect import DetectResult, detect_pdf_type
+from document2chunk.pipeline.pdf_detect import DetectResult, detect_pdf_type
 from document2chunk.ir import (
     BlockNode,
     DocumentMetadata,
