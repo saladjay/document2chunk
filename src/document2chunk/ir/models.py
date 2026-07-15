@@ -71,8 +71,15 @@ class HyperlinkNode(_InlineBase):
     runs: List[RunNode] = Field(default_factory=list)
 
 
+class InlineFormulaNode(_InlineBase):
+    """行内公式（LaTeX）。块级公式用 :class:`FormulaNode`。F18。"""
+
+    type: Literal["inline_formula"] = "inline_formula"
+    latex: str = ""
+
+
 InlineNode = Annotated[
-    Union[RunNode, HyperlinkNode], Field(discriminator="type")
+    Union[RunNode, HyperlinkNode, InlineFormulaNode], Field(discriminator="type")
 ]
 
 
@@ -275,6 +282,7 @@ for _model in (
     TocNode,
     RunNode,
     HyperlinkNode,
+    InlineFormulaNode,
     LogicalDocument,
 ):
     _model.model_rebuild()

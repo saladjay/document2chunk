@@ -1,230 +1,174 @@
-"""ocr-extractor 契约冒烟测试（specs/ocr-extractor §4 验收）。
-
-运行：
-    PYTHONPATH=src python tests/test_ocr_extractor.py
-
-source 感知逻辑用 stub 前端测试（无需 PaddleOCR 模型）；
-真实 PaddleOCR 集成测试在模型不可加载时自动 skip。
-"""
+"""ocr-extractor 测试（合成 fixture 匹配实测 schema；client 用 mock）。"""
 
 from __future__ import annotations
 
-from collections import Counter
+import copy
+import os
+import tempfile
 
-from PIL import Image
-
-from document2chunk.extractors.ocr import (
-    OcrExtractor,
-    OcrLine,
-    OcrPageResult,
-    OcrRegion,
-)
+from document2chunk.extractors.ocr import OcrExtractor
+from document2chunk.extractors.ocr._mapping import _Idc, build_page_blocks
+from document2chunk.extractors.ocr._markdown import parse_markdown
 from document2chunk.ir import (
-    ExtractionResult,
+    FormulaNode,
     HeadingNode,
     ImageNode,
+    InlineFormulaNode,
     ParagraphNode,
+    RunNode,
     SourceType,
+    TableNode,
 )
 
+TINY_PNG_B64 = (
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=="
+)
 
-# ---------- stub 前端 ----------
+MD = (
+    "# 标题一\n\n"
+    "这是正文。\n\n"
+    "<table><tr><td>A</td><td>B</td></tr><tr><td>1</td><td>2</td></tr></table>\n\n"
+    "![图](ocr_images/img1.png)"
+)
 
+PRL = [
+    {"block_label": "title", "block_order": 0, "block_content": "标题一", "block_bbox": [10, 10, 100, 30]},
+    {"block_label": "text", "block_order": 1, "block_content": "这是正文。", "block_bbox": [10, 40, 100, 60]},
+    {"block_label": "table", "block_order": 2, "block_content": "<table>", "block_bbox": [10, 70, 200, 120]},
+    {"block_label": "image", "block_order": 3, "block_content": "", "block_bbox": [10, 130, 150, 180]},
+]
+IMAGES = {"ocr_images/img1.png": TINY_PNG_B64}
 
-class _StubFrontend:
-    """模拟 PaddleOCR + 版面分析结果。"""
-
-    def __init__(self, page_results):
-        self._results = page_results
-        self._i = 0
-
-    def recognize(self, image):
-        r = self._results[min(self._i, len(self._results) - 1)]
-        self._i += 1
-        return r
-
-
-def _blank(w=1240, h=1754):
-    return Image.new("RGB", (w, h))
-
-
-def _one_page_result():
-    return OcrPageResult(
-        width_px=1240,
-        height_px=1754,
-        lines=[
-            OcrLine([100, 200, 600, 240], "文档主标题", confidence=0.95),
-            OcrLine([100, 400, 600, 430], "正文第一行。", confidence=0.9),
-            OcrLine([100, 700, 600, 730], "低置信孤行。", confidence=0.3),
-            OcrLine([600, 1650, 640, 1690], "1", confidence=0.99),  # footer 页码
-        ],
-        regions=[
-            OcrRegion([80, 190, 620, 250], "title"),
-            OcrRegion([80, 380, 620, 500], "text"),
-            OcrRegion([80, 680, 620, 740], "text"),
-            OcrRegion([500, 1640, 660, 1700], "footer"),
-        ],
-    )
+RESP = {
+    "markdown": MD,
+    "images": IMAGES,
+    "layoutParsingResults": [
+        {
+            "page_index": 1,
+            "page_count": 1,
+            "markdown": {"text": MD, "images": IMAGES},
+            "parsing_res_list": PRL,
+        }
+    ],
+}
 
 
-# ---------- 1. title → heading；footer 排除；低置信标记；ocr provenance ----------
+class FakeClient:
+    def active_model(self):
+        return "unlimited"
+
+    def parse(self, media, filename, *, model):
+        return copy.deepcopy(RESP)
 
 
-def test_source_aware_degradation():
-    result = OcrExtractor(frontend=_StubFrontend([_one_page_result()]), dpi=200).extract(
-        _blank()
-    )
+def test_parse_markdown_elements():
+    els = parse_markdown(MD)
+    assert [e["kind"] for e in els] == ["heading", "paragraph", "table", "image"]
+    assert els[0]["level"] == 1 and els[0]["text"] == "标题一"
+    assert els[3]["ref"] == "ocr_images/img1.png"
+
+
+def test_build_page_blocks_types_and_provenance():
+    blocks = build_page_blocks(MD, PRL, IMAGES, 0, _Idc(), None, False, [0])
+    assert len(blocks) == 4
+    assert isinstance(blocks[0], HeadingNode) and blocks[0].level == 1
+    assert isinstance(blocks[1], ParagraphNode)
+    assert isinstance(blocks[2], TableNode)
+    assert isinstance(blocks[3], ImageNode)
+    # bbox 来自 parsing_res_list，page_index=0
+    assert blocks[0].provenance.page_index == 0
+    assert blocks[0].provenance.bbox == [10, 10, 100, 30]
+    assert blocks[2].provenance.bbox == [10, 70, 200, 120]
+
+
+def test_table_html_to_node():
+    blocks = build_page_blocks(MD, PRL, IMAGES, 0, _Idc(), None, False, [0])
+    t = blocks[2]
+    assert len(t.rows) == 2
+    assert t.rows[0].is_header is True
+    assert t.rows[0].cells[0].blocks[0].text == "A"
+    assert t.rows[1].cells[1].blocks[0].text == "2"
+
+
+def test_image_saved_to_dir():
+    with tempfile.TemporaryDirectory() as d:
+        blocks = build_page_blocks(MD, PRL, IMAGES, 0, _Idc(), d, True, [0])
+        assert blocks[3].image_id == "p0_1.png"
+        assert os.path.exists(os.path.join(d, "p0_1.png"))
+
+
+def test_drop_page_number_label():
+    prl = PRL + [{"block_label": "page_number", "block_order": 4, "block_content": "1", "block_bbox": [0, 0, 10, 10]}]
+    blocks = build_page_blocks(MD, prl, IMAGES, 0, _Idc(), None, False, [0])
+    assert len(blocks) == 4  # page_number 不产块，且不破坏 1:1 关联
+    assert blocks[0].provenance.bbox == [10, 10, 100, 30]
+
+
+def test_extractor_with_mock():
+    ext = OcrExtractor(client=FakeClient())
+    result = ext.extract(b"FAKEIMAGEBYTES_NOT_PDF")
     assert result.metadata.source_type == SourceType.OCR
     assert result.metadata.page_count == 1
-
-    types = Counter(type(b).__name__ for b in result.content)
-    # title 标签 → HeadingNode（主信号）
-    assert any(
-        isinstance(b, HeadingNode) and b.text == "文档主标题" for b in result.content
-    ), types
-    # footer 页码不进 content
-    assert not any(getattr(b, "text", "") == "1" for b in result.content)
-    # 低置信行（即便被合并）标 low_confidence
-    assert any(
-        b.metadata.get("low_confidence") for b in result.content
-    ), "low_confidence flag missing"
-    # 节点带 ocr provenance + confidence
-    for b in result.content:
-        assert b.provenance is not None
-        assert b.provenance.source_type == SourceType.OCR
-        assert b.provenance.confidence is not None
-        assert b.provenance.page_index == 0
-    # RunNode 带 OCR provenance.bbox
-    para = next(b for b in result.content if isinstance(b, ParagraphNode))
-    assert para.runs and para.runs[0].provenance.bbox is not None
-    print(f"OK test_source_aware_degradation (types={dict(types)})")
+    assert len(result.content) == 4
+    assert isinstance(result.content[0], HeadingNode)
+    assert result.content[0].text == "标题一"
 
 
-# ---------- 2. 多页 page_index 递增 ----------
-
-
-def test_multipage_page_index():
-    pages = [_one_page_result(), _one_page_result()]
-    result = OcrExtractor(frontend=_StubFrontend(pages), dpi=200).extract(_blank())
-    # 第二页的节点 page_index 应为 1（_StubFrontend 每张图返回一个 result）
-    assert result.metadata.page_count >= 1
-    # 单图只产生 1 页；这里验证 provenance.page_index 来自页码
-    for b in result.content:
-        assert b.provenance.page_index in (0,)
-    print("OK test_multipage_page_index")
-
-
-def test_multipage_pdf_input():
-    """多页 PDF 输入 → 每页 page_index 递增。"""
-    result_pages = [
-        OcrPageResult(
-            width_px=1240,
-            height_px=1754,
-            lines=[OcrLine([100, 200, 400, 240], f"标题{idx}", confidence=0.9)],
-            regions=[OcrRegion([80, 190, 620, 250], "title")],
-        )
-        for idx in range(3)
-    ]
-    # 造一个 3 页 PDF（每页一张白图）
+def test_multipage_pdf_chunking():
+    """2 页 PDF → 按页切分，两页都处理（回归 PDF 魔数判断 bug）。"""
     import io
-    import pymupdf
-    from PIL import Image
 
-    doc = pymupdf.open()
+    import fitz
+
+    d = fitz.open()
+    for _ in range(2):
+        p = d.new_page()
+        p.insert_text((50, 72), "x")
     buf = io.BytesIO()
-    Image.new("RGB", (1240, 1754), "white").save(buf, format="png")
-    png = buf.getvalue()
-    for _ in range(3):
-        page = doc.new_page(width=595, height=842)
-        page.insert_image(page.rect, stream=png)
-    pdf_bytes = doc.tobytes()
-    doc.close()
+    d.save(buf)
+    d.close()
+    pdf2 = buf.getvalue()
 
-    result = OcrExtractor(frontend=_StubFrontend(result_pages), dpi=200).extract(pdf_bytes)
-    assert result.metadata.page_count == 3
-    page_indexes = sorted({b.provenance.page_index for b in result.content})
-    assert page_indexes == [0, 1, 2], page_indexes
-    print(f"OK test_multipage_pdf_input (pages={page_indexes})")
+    ext = OcrExtractor(client=FakeClient())
+    result = ext.extract(pdf2)
+    assert result.metadata.page_count == 2
+    pages = {b.provenance.page_index for b in result.content if b.provenance}
+    assert pages == {0, 1}, f"应处理两页，实际 page_index: {pages}"
 
 
-# ---------- 3. figure 区域 → ImageNode ----------
-
-
-def test_figure_region_to_image_node():
-    page = OcrPageResult(
-        width_px=1240,
-        height_px=1754,
-        lines=[],
-        regions=[OcrRegion([100, 300, 500, 600], "figure")],
-    )
-    result = OcrExtractor(frontend=_StubFrontend([page]), dpi=200).extract(_blank())
-    imgs = [b for b in result.content if isinstance(b, ImageNode)]
-    assert len(imgs) == 1, [type(b).__name__ for b in result.content]
-    assert imgs[0].provenance.source_type == SourceType.OCR
-    assert imgs[0].width_emu and imgs[0].height_emu  # 由 bbox 尺寸换算 EMU
-    print("OK test_figure_region_to_image_node")
-
-
-# ---------- 4. 往返 ----------
-
-
-def test_ocr_roundtrip():
-    result = OcrExtractor(frontend=_StubFrontend([_one_page_result()]), dpi=200).extract(
-        _blank()
-    )
-    r2 = ExtractionResult.model_validate_json(result.model_dump_json(exclude_none=True))
-    assert len(r2.content) == len(result.content)
-    assert r2.metadata.source_type == SourceType.OCR
-    print("OK test_ocr_roundtrip")
-
-
-# ---------- 5. 真实 PaddleOCR（模型不可用则 skip）----------
-
-
-def test_real_paddleocr_smoke():
-    """对一张含文字的图片跑真实 PaddleOCR；模型加载/下载失败则 skip。"""
-    import io
-
-    from PIL import Image, ImageDraw
-
-    try:
-        from document2chunk.extractors.ocr import PaddleOcrFrontend
-    except Exception:
-        print("SKIP test_real_paddleocr_smoke (paddleocr 未安装)")
-        return
-
-    img = Image.new("RGB", (1000, 400), "white")
-    d = ImageDraw.Draw(img)
-    d.text((50, 50), "Hello OCR Title", fill="black")
-    d.text((50, 200), "Some body text here.", fill="black")
-
-    try:
-        result = OcrExtractor(frontend=PaddleOcrFrontend(), dpi=200).extract(img)
-    except Exception as e:  # 模型下载失败 / 离线 / GPU 等
-        print(f"SKIP test_real_paddleocr_smoke (模型不可用: {type(e).__name__})")
-        return
-
-    assert result.metadata.source_type == SourceType.OCR
-    # 识别到内容则通过；空结果视为 inconclusive（取决于渲染清晰度/模型/结果解析）
-    # —— source 感知逻辑已由 stub 测试覆盖。
-    if not result.content:
-        print("SKIP test_real_paddleocr_smoke (识别为空：inconclusive，见 stub 测试)")
-        return
-    print(f"OK test_real_paddleocr_smoke (blocks={len(result.content)})")
-
-
-# ---------- runner ----------
-
-
-def main():
-    test_source_aware_degradation()
-    test_multipage_page_index()
-    test_multipage_pdf_input()
-    test_figure_region_to_image_node()
-    test_ocr_roundtrip()
-    test_real_paddleocr_smoke()
-    print("\nALL OCR EXTRACTOR TESTS PASSED")
+def test_block_and_inline_formulas():
+    """块 \\[ .. \\] → FormulaNode；行内 \\( .. \\) → ParagraphNode.runs 里的 InlineFormulaNode。"""
+    md = "# 公式示例\n\n\\[\nE = mc^2\n\\]\n\n行内 \\(x = 1\\) 公式。\n"
+    prl = [
+        {"block_label": "title", "block_order": 0, "block_content": "公式示例", "block_bbox": [0, 0, 10, 10]},
+        {"block_label": "equation", "block_order": 1, "block_content": "E = mc^2", "block_bbox": [0, 20, 10, 30]},
+        {"block_label": "text", "block_order": 2, "block_content": "行内...", "block_bbox": [0, 40, 10, 50]},
+    ]
+    blocks = build_page_blocks(md, prl, {}, 0, _Idc(), None, False, [0])
+    assert len(blocks) == 3
+    # 块公式
+    assert isinstance(blocks[1], FormulaNode)
+    assert blocks[1].latex == "E = mc^2"
+    assert blocks[1].provenance.bbox == [0, 20, 10, 30]  # equation 块 bbox
+    # 行内公式：段落 runs = Run / InlineFormula / Run
+    p = blocks[2]
+    assert isinstance(p, ParagraphNode)
+    kinds = [type(r).__name__ for r in p.runs]
+    assert kinds == ["RunNode", "InlineFormulaNode", "RunNode"], kinds
+    assert p.runs[1].latex == "x = 1"
 
 
 if __name__ == "__main__":
-    main()
+    for fn in [
+        test_parse_markdown_elements,
+        test_build_page_blocks_types_and_provenance,
+        test_table_html_to_node,
+        test_image_saved_to_dir,
+        test_drop_page_number_label,
+        test_extractor_with_mock,
+        test_multipage_pdf_chunking,
+        test_block_and_inline_formulas,
+    ]:
+        fn()
+        print("ok:", fn.__name__)
+    print("ALL OCR TESTS PASSED")

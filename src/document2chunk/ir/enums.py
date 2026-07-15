@@ -34,3 +34,4 @@ class InlineType(str, Enum):
 
     RUN = "run"
     HYPERLINK = "hyperlink"
+    INLINE_FORMULA = "inline_formula"

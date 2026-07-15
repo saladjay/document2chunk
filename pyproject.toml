@@ -16,7 +16,7 @@ dependencies = [
 
 [project.optional-dependencies]
 pdf = ["PyMuPDF>=1.23.0", "pdfplumber>=0.10.0"]
-ocr = ["httpx>=0.24.0"]
+ocr = ["httpx>=0.24.0", "markdown-it-py>=3.0", "PyMuPDF>=1.23.0"]
 docx = ["lxml>=4.9.0"]
 api = ["fastapi>=0.100.0", "uvicorn>=0.20.0"]
 viz = ["Pillow>=9.0.0"]
