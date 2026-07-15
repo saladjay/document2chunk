@@ -205,7 +205,8 @@ def _pdf_kind(source: Source) -> SourceType:
     except ImportError:
         detect_pdf_type = None
     if detect_pdf_type is not None:
-        kind = detect_pdf_type(source)  # 'editable' | 'scanned' | 'mixed'
+        res = detect_pdf_type(source)  # DetectResult 或字符串
+        kind = getattr(res, "pdf_type", res)  # 'editable' | 'scanned' | 'mixed'
         return SourceType.OCR if kind in ("scanned", "mixed") else SourceType.PDF
     return _pdf_kind_heuristic(source)
 
