@@ -44,19 +44,47 @@ def _classify(pdf: Path) -> str:
 
 
 def _parse_one(pdf: Path, out_dir: Path, do_viz: bool) -> dict:
-    """解析单个 PDF，写 markdown/json/(viz)，返回统计行。"""
-    from document2chunk import parse
+    """解析单个 PDF：分类 → 选 extractor（捕获中间结果）→ assemble → md/json/viz。"""
     from document2chunk.export import to_json, to_markdown
+    from document2chunk.ir import SourceType
+    from document2chunk.pipeline.pdf_detect import detect_pdf_type
+    from document2chunk.structure import assemble
 
-    row: dict = {"file": pdf.name, "status": "ok", "source_type": "", "pages": "",
-                 "blocks": "", "headings": "", "tables": "", "images": "", "time_s": ""}
+    row: dict = {"file": pdf.name, "group": pdf.parent.name, "status": "ok",
+                 "pdf_type": "", "source_type": "", "pages": "", "blocks": "",
+                 "headings": "", "tables": "", "images": "", "time_s": ""}
     t0 = time.time()
-    doc = parse(pdf)
+
+    # 分类
+    try:
+        kind = getattr(detect_pdf_type(str(pdf)), "pdf_type", "editable")
+    except Exception:
+        kind = "editable"
+    row["pdf_type"] = kind
+
+    sub = out_dir / pdf.parent.name / pdf.stem  # 保留组子目录结构
+    sub.mkdir(parents=True, exist_ok=True)
+    inter_dir = sub / "intermediate"
+
+    if kind in ("scanned", "mixed"):
+        from document2chunk.extractors.ocr import OcrExtractor
+
+        result = OcrExtractor().extract(
+            pdf, image_out_dir=str(sub / "images"), dump_dir=str(inter_dir)
+        )
+        st = SourceType.OCR
+    else:
+        from document2chunk.extractors.pdf import PdfExtractor
+
+        result = PdfExtractor(debug_dir=str(inter_dir)).extract(pdf)
+        st = SourceType.PDF
+
+    doc = assemble(result)
     dt = time.time() - t0
 
     kinds = Counter(type(b).__name__ for b in doc.content)
     row.update({
-        "source_type": doc.metadata.source_type or "",
+        "source_type": st.value,
         "pages": doc.metadata.page_count or "",
         "blocks": len(doc.content),
         "headings": kinds.get("HeadingNode", 0),
@@ -65,8 +93,6 @@ def _parse_one(pdf: Path, out_dir: Path, do_viz: bool) -> dict:
         "time_s": round(dt, 1),
     })
 
-    sub = out_dir / pdf.stem
-    sub.mkdir(parents=True, exist_ok=True)
     (sub / "output.md").write_text(to_markdown(doc), encoding="utf-8")
     (sub / "document.json").write_text(to_json(doc), encoding="utf-8")
 
@@ -92,7 +118,7 @@ def main() -> None:
     args = ap.parse_args()
 
     in_dir = Path(args.input_dir)
-    pdfs = sorted(p for p in in_dir.glob(f"*{args.ext}") if p.is_file())
+    pdfs = sorted(p for p in in_dir.rglob(f"*{args.ext}") if p.is_file())
     if args.sample:
         pdfs = pdfs[: args.sample]
     if not pdfs:
@@ -125,9 +151,9 @@ def main() -> None:
         try:
             row = _parse_one(pdf, out_dir, args.viz)
         except Exception as e:
-            row = {"file": pdf.name, "status": f"ERROR:{type(e).__name__}:{str(e)[:100]}",
-                   "source_type": "", "pages": "", "blocks": "", "headings": "",
-                   "tables": "", "images": "", "time_s": ""}
+            row = {"file": pdf.name, "group": pdf.parent.name, "status": f"ERROR:{type(e).__name__}:{str(e)[:100]}",
+                   "pdf_type": "", "source_type": "", "pages": "", "blocks": "",
+                   "headings": "", "tables": "", "images": "", "time_s": ""}
             print("   [ERR]", row["status"])
             traceback.print_exc(limit=2)
         else:

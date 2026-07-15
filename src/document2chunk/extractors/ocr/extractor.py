@@ -20,6 +20,31 @@ def _read_bytes(source) -> bytes:
         return f.read()
 
 
+def _dump_response(dump_dir, page_index: int, resp: dict) -> None:
+    """落盘每页原始服务响应（中间结果）。images 的 base64 脱敏为长度标记（避免巨文件）。"""
+    import json
+    import os
+
+    os.makedirs(str(dump_dir), exist_ok=True)
+
+    def _mask(imgs):
+        if not isinstance(imgs, dict):
+            return imgs
+        return {
+            k: (f"<base64 {len(v)} chars>" if isinstance(v, str) else v) for k, v in imgs.items()
+        }
+
+    sanitized = dict(resp)
+    sanitized["images"] = _mask(sanitized.get("images") or {})
+    for lp in sanitized.get("layoutParsingResults") or []:
+        m = lp.get("markdown") if isinstance(lp, dict) else None
+        if isinstance(m, dict) and m.get("images"):
+            m["images"] = _mask(m["images"])
+    path = os.path.join(str(dump_dir), f"page_{page_index:03d}_response.json")
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(sanitized, f, ensure_ascii=False, indent=2)
+
+
 class OcrExtractor:
     """扫描件/图片/复杂版式 → IR（远程 PaddleOCR 服务，D11）。"""
 
@@ -35,6 +60,7 @@ class OcrExtractor:
         *,
         options=None,
         image_out_dir: Optional[str] = None,
+        dump_dir: Optional[str] = None,
     ) -> ExtractionResult:
         data = _read_bytes(source)
         source_file = Path(source).name if isinstance(source, (str, Path)) else None
@@ -54,6 +80,8 @@ class OcrExtractor:
 
         for page_index, media, fname, pw, ph in iter_pages(data, source_file or "source"):
             resp = self._client.parse(media, fname, model=model)
+            if dump_dir:
+                _dump_response(dump_dir, page_index, resp)
             lp_list = resp.get("layoutParsingResults") or []
             lp = lp_list[0] if lp_list else {}
             # 优先用每页 markdown，回退顶层 markdown
