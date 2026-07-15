@@ -167,10 +167,9 @@ def test_bbox_calibration_to_page_coords():
     ]
     blocks = build_page_blocks(md, prl, {}, 0, _Idc(), None, False, [0], 595.0, 842.0, 1000.0, 1000.0)
     b = blocks[0].provenance.bbox
-    assert abs(b[0] - 98.175) < 0.1
-    assert abs(b[1] - 197.028) < 0.1
-    assert abs(b[2] - 468.365) < 0.1
-    assert abs(b[3] - 249.256) < 0.1
+    expected = [165 * 595 / 1000, 234 * 842 / 1000, 787 * 595 / 1000, 296 * 842 / 1000]
+    for got, exp in zip(b, expected):
+        assert abs(got - exp) < 1e-6, (got, exp)
     # 不传页面尺寸 → 不换算（原样）
     blocks_raw = build_page_blocks(md, prl, {}, 0, _Idc(), None, False, [0])
     assert blocks_raw[0].provenance.bbox == [165, 234, 787, 296]
