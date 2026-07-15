@@ -152,14 +152,31 @@ def test_parse_bytes_sniff():
     assert doc.metadata.source_type == SourceType.PDF
 
 
-def test_parse_missing_extractor_raises():
+def test_parse_unsupported_format_raises():
     _setup()
-    # 无 mock、extractor 未实现 → MissingDependencyError
+    # 未实现的格式（html 无 loader）→ UnsupportedFormatError
     try:
-        api.parse("a.docx")
-        assert False, "应抛 MissingDependencyError"
-    except MissingDependencyError:
+        api.parse("x.html")
+        assert False, "应抛 UnsupportedFormatError"
+    except UnsupportedFormatError:
         pass
+
+
+def test_parse_real_docx_fixture():
+    """端到端：真实 DocxExtractor 解析 fixtures/a.docx → LogicalDocument。
+
+    integration 上 docx-extractor 已就绪（旧版 test_parse_missing_extractor_raises
+    假设 docx 未实现，已过时）。这里用真实夹具验证路由→真实 extractor→assemble。
+    """
+    _setup()
+    import os
+
+    fixture = os.path.join(os.path.dirname(__file__), "fixtures", "a.docx")
+    doc = api.parse(fixture)
+    assert isinstance(doc, LogicalDocument)
+    assert len(doc.content) >= 1, "docx 应解析出内容"
+    assert doc.metadata.source_type == SourceType.DOCX
+    assert doc.metadata.source_file == "a.docx"
 
 
 # ---------------------------------------------------------------------------
@@ -221,7 +238,8 @@ def main():
     test_parse_docx_skeleton()
     test_parse_extract_images_false_propagates()
     test_parse_bytes_sniff()
-    test_parse_missing_extractor_raises()
+    test_parse_unsupported_format_raises()
+    test_parse_real_docx_fixture()
     test_http_health_and_parse()
     test_http_unsupported_400()
     print("ALL API TESTS PASSED")
