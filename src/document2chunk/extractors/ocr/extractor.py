@@ -52,7 +52,7 @@ class OcrExtractor:
         img_counter = [0]
         blocks = []
 
-        for page_index, media, fname in iter_pages(data, source_file or "source"):
+        for page_index, media, fname, pw, ph in iter_pages(data, source_file or "source"):
             resp = self._client.parse(media, fname, model=model)
             lp_list = resp.get("layoutParsingResults") or []
             lp = lp_list[0] if lp_list else {}
@@ -60,8 +60,12 @@ class OcrExtractor:
             md = ((lp.get("markdown") or {}).get("text")) or resp.get("markdown", "")
             images = resp.get("images") or (lp.get("markdown") or {}).get("images") or {}
             prl = lp.get("parsing_res_list") or []
+            # 服务坐标空间（1000 归一化），用于把 bbox 换算到源自然坐标系
+            sw = float(lp.get("width") or 1000)
+            sh = float(lp.get("height") or 1000)
             page_blocks = build_page_blocks(
-                md, prl, images, page_index, idc, image_out_dir, extract_images, img_counter
+                md, prl, images, page_index, idc, image_out_dir, extract_images, img_counter,
+                pw, ph, sw, sh,
             )
             blocks.extend(page_blocks)
 

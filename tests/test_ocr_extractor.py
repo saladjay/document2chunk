@@ -158,6 +158,24 @@ def test_block_and_inline_formulas():
     assert p.runs[1].latex == "x = 1"
 
 
+def test_bbox_calibration_to_page_coords():
+    """OCR 服务 1000 归一化 bbox → PDF 点空间（debug 可视化坐标校准）。"""
+    md = "# T\n\np"
+    prl = [
+        {"block_label": "title", "block_order": 0, "block_content": "T", "block_bbox": [165, 234, 787, 296]},
+        {"block_label": "text", "block_order": 1, "block_content": "p", "block_bbox": [100, 100, 200, 200]},
+    ]
+    blocks = build_page_blocks(md, prl, {}, 0, _Idc(), None, False, [0], 595.0, 842.0, 1000.0, 1000.0)
+    b = blocks[0].provenance.bbox
+    assert abs(b[0] - 98.175) < 0.1
+    assert abs(b[1] - 197.028) < 0.1
+    assert abs(b[2] - 468.365) < 0.1
+    assert abs(b[3] - 249.256) < 0.1
+    # 不传页面尺寸 → 不换算（原样）
+    blocks_raw = build_page_blocks(md, prl, {}, 0, _Idc(), None, False, [0])
+    assert blocks_raw[0].provenance.bbox == [165, 234, 787, 296]
+
+
 if __name__ == "__main__":
     for fn in [
         test_parse_markdown_elements,
@@ -168,6 +186,7 @@ if __name__ == "__main__":
         test_extractor_with_mock,
         test_multipage_pdf_chunking,
         test_block_and_inline_formulas,
+        test_bbox_calibration_to_page_coords,
     ]:
         fn()
         print("ok:", fn.__name__)

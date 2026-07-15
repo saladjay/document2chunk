@@ -34,6 +34,24 @@ from document2chunk.ir import (
 
 DROP_LABELS = {"page_number", "header", "footer", "number"}
 
+
+def _convert_bbox(
+    bbox: Optional[List[float]],
+    page_w: Optional[float],
+    page_h: Optional[float],
+    service_w: float,
+    service_h: float,
+) -> Optional[List[float]]:
+    """OCR 服务 bbox（1000 归一化空间）→ 源自然坐标系（PDF 点 / 图片像素）。
+
+    x、y 各自归一化（service 宽高均为 1000，与页面宽高解耦），故 x 按 page_w/service_w、
+    y 按 page_h/service_h 缩放。无页面尺寸时原样返回（不换算）。
+    """
+    if not bbox or len(bbox) < 4 or not page_w or not page_h or not service_w or not service_h:
+        return bbox
+    sx, sy = page_w / service_w, page_h / service_h
+    return [bbox[0] * sx, bbox[1] * sy, bbox[2] * sx, bbox[3] * sy]
+
 # 行内公式 \( ... \)（服务实测输出格式）
 _INLINE_FORMULA_RE = re.compile(r"\\\((.+?)\\\)", re.S)
 
@@ -86,6 +104,10 @@ def build_page_blocks(
     image_out_dir: Optional[str],
     extract_images: bool,
     _img_counter: List[int],
+    page_w: Optional[float] = None,
+    page_h: Optional[float] = None,
+    service_w: float = 1000.0,
+    service_h: float = 1000.0,
 ) -> List[BlockNode]:
     """单页 markdown+parsing_res_list → BlockNode 列表（带 provenance）。"""
     elements = parse_markdown(markdown)
@@ -94,6 +116,7 @@ def build_page_blocks(
     out: List[BlockNode] = []
     for i, el in enumerate(elements):
         bbox = content_blocks[i].get("block_bbox") if i < len(content_blocks) else None
+        bbox = _convert_bbox(bbox, page_w, page_h, service_w, service_h)
         prov = Provenance(source_type=SourceType.OCR, page_index=page_index, bbox=bbox)
         node = _element_to_node(el, images, page_index, idc, image_out_dir, extract_images, _img_counter, prov)
         if node is not None:
