@@ -32,6 +32,10 @@ class PipelineError(Document2ChunkError):
     """span 管线编排异常。"""
 
 
+class OcrServiceError(Document2ChunkError):
+    """远程 OCR 服务异常：不可达 / 超时 / 模型未就绪 / 返回异常（D11）。"""
+
+
 # 历史别名：与 MissingDependencyError 同义（① 早期命名），保留向后兼容。
 OptionalDependencyError = MissingDependencyError
 
