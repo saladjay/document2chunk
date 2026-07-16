@@ -121,6 +121,8 @@ def build_page_blocks(
         node = _element_to_node(el, images, page_index, idc, image_out_dir, extract_images, _img_counter, prov)
         if node is not None:
             out.append(node)
+    # 过滤空文本块（Phase 1L）
+    out = [b for b in out if not (isinstance(b, (HeadingNode, ParagraphNode)) and not (b.text or "").strip())]
     return out
 
 

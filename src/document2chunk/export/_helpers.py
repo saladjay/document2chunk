@@ -46,12 +46,17 @@ def cell_text(cell) -> str:
     return " ".join(block_text(b) for b in cell.blocks).strip()
 
 
+def _escape_md(text: str) -> str:
+    """转义 GFM 特殊字符（乘号 * 等避免被当 emphasis）。"""
+    return (text or "").replace("*", "\\*")
+
+
 def block_markdown(block: BlockNode) -> str:
     """单个块 → Markdown 片段。"""
     if isinstance(block, HeadingNode):
         return f"{'#' * min(block.level, 6)} {block.text}"
     if isinstance(block, ParagraphNode):
-        return block.text
+        return _escape_md(block.text)
     if isinstance(block, TableNode):
         return table_markdown(block)
     if isinstance(block, ListNode):

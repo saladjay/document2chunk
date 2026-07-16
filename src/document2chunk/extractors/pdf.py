@@ -685,6 +685,10 @@ class PdfExtractor:
 
         metadata = self._metadata(source, page_count=len(raw_pages), custom=custom)
 
+        # 8. 共享标题定级（编号正则覆盖 AutoLevel + 多行合并，designs/005）
+        from document2chunk.heading import calibrate
+        blocks = calibrate(blocks, metadata, use_height_fallback=False)
+
         return ExtractionResult(
             content=blocks,
             metadata=metadata,
