@@ -175,6 +175,41 @@ def test_bbox_calibration_to_page_coords():
     assert blocks_raw[0].provenance.bbox == [165, 234, 787, 296]
 
 
+def test_heading_calibration_doc_level():
+    """文档级标题定级（designs/004）：编号优先 + 高度聚类 + 大标题抽 metadata。"""
+    from document2chunk.extractors.ocr._heading_level import calibrate
+    from document2chunk.ir import DocumentMetadata, Provenance, SourceType
+
+    def P(text, h=22):
+        return ParagraphNode(id=f"p{text}", text=text,
+                             provenance=Provenance(source_type=SourceType.OCR, bbox=[0, 0, 100, h]))
+
+    def H(text, h, level):
+        return HeadingNode(id=f"h{text}", level=level, text=text,
+                           provenance=Provenance(source_type=SourceType.OCR, bbox=[0, 0, 100, h]))
+
+    content = [
+        H("国土资源部文件", 62, 1),                              # 大标题(版头)
+        H("关于改进管理方式切实落实耕地占补平衡的通知", 74, 2),  # 大标题(真标题)
+        H("一、A", 23, 2), P("正文1"),                           # cn_major（噪声 H2）
+        H("二、B", 24, 1), P("正文2"),                           # cn_major（噪声 H1）
+        H("三、C", 23, 1),                                      # cn_major
+        H("四、D", 24, 2), P("正文3"),                           # cn_major（噪声 H2）
+        H("（一）子项", 24, 3), P("正文4"),                      # cn_minor → H2
+    ]
+    md = DocumentMetadata(source_type=SourceType.OCR)
+    out = calibrate(content, md)
+
+    heads = [(b.level, b.text) for b in out if isinstance(b, HeadingNode)]
+    assert heads == [(1, "一、A"), (1, "二、B"), (1, "三、C"), (1, "四、D"), (2, "（一）子项")], heads
+    # 大标题 → metadata（最长=title，版头=custom）
+    assert md.title == "关于改进管理方式切实落实耕地占补平衡的通知"
+    assert md.custom.get("doc_titles") == ["国土资源部文件"]
+    # 大标题降级为 ParagraphNode（文本不丢）
+    para_texts = [b.text for b in out if isinstance(b, ParagraphNode)]
+    assert "国土资源部文件" in para_texts
+
+
 if __name__ == "__main__":
     for fn in [
         test_parse_markdown_elements,
@@ -186,6 +221,7 @@ if __name__ == "__main__":
         test_multipage_pdf_chunking,
         test_block_and_inline_formulas,
         test_bbox_calibration_to_page_coords,
+        test_heading_calibration_doc_level,
     ]:
         fn()
         print("ok:", fn.__name__)
