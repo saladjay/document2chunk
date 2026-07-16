@@ -9,7 +9,7 @@ from document2chunk.extractors.ocr._chunker import iter_pages, page_count
 from document2chunk.extractors.ocr._client import OcrServiceClient
 from document2chunk.extractors.ocr._config import OcrConfig
 from document2chunk.extractors.ocr._exceptions import OcrServiceError
-from document2chunk.extractors.ocr._heading_level import calibrate
+from document2chunk.heading import calibrate, join_cross_page_paragraphs
 from document2chunk.extractors.ocr._mapping import _Idc, build_page_blocks
 from document2chunk.ir import DocumentMetadata, ExtractionResult, SourceType
 
@@ -109,4 +109,5 @@ class OcrExtractor:
         )
         # 文档级标题重定级（编号优先 + 高度聚类；大标题抽 metadata）—— designs/004
         blocks = calibrate(blocks, metadata)
+        blocks = join_cross_page_paragraphs(blocks)
         return ExtractionResult(content=blocks, metadata=metadata, toc_entries=None)

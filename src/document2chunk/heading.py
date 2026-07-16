@@ -25,6 +25,7 @@ RE_ARTICLE = re.compile(rf"^第{_NUM}条")
 RE_CN_MAJOR = re.compile(rf"^{_NUM}、")
 RE_CN_MINOR = re.compile(rf"^[（(]{_NUM}[）)]")
 RE_DIGIT = re.compile(r"^(\d+[.、]|[（(]\d+[）)])")
+RE_APPENDIX = re.compile(r"^(附\s*[表录件]|附\s*录|appendix)", re.IGNORECASE)
 
 _STYLE_LEVEL = {"chapter": 1, "cn_major": 1, "section": 2, "cn_minor": 2, "article": 3, "digit": 4}
 
@@ -122,6 +123,13 @@ def calibrate(
             new_content.append(b)
             continue
 
+        # 附页/附件/附录 → 重置层级（新子文档，Phase 2G）
+        if RE_APPENDIX.match((b.text or "").strip()):
+            prev_level = 0
+            b.level = 1
+            new_content.append(b)
+            continue
+
         st = style_of(b.text)
         h = _bbox_h(b)
         ratio = (h / body_h) if body_h else 0.0
@@ -161,3 +169,48 @@ def calibrate(
             metadata.custom["doc_titles"] = doc_titles[1:]
 
     return new_content
+
+
+# ── Phase 2E: 跨页段落续接 ──
+
+_SENTENCE_END_CHARS = set("。！？.!?；;:：\n\r")
+
+
+def join_cross_page_paragraphs(content: List[BlockNode]) -> List[BlockNode]:
+    """跨页段落续接：page N 末段 + page N+1 首段，若首段无句号结尾 → 合并。
+
+    典型场景："…因成片开发征"(pN 末) + "收土地的，不再…"(pN+1 首) → 合并成一句。
+    """
+    result: List[BlockNode] = []
+    i = 0
+    while i < len(content):
+        b = content[i]
+        if isinstance(b, ParagraphNode) and i + 1 < len(content):
+            nxt = content[i + 1]
+            if isinstance(nxt, ParagraphNode) and _is_cross_page_continuation(b, nxt):
+                b.text = (b.text or "") + (nxt.text or "")
+                if hasattr(b, "runs") and hasattr(nxt, "runs"):
+                    b.runs = list(b.runs) + list(nxt.runs)
+                i += 2
+                result.append(b)
+                continue
+        result.append(b)
+        i += 1
+    return result
+
+
+def _is_cross_page_continuation(b1: ParagraphNode, b2: ParagraphNode) -> bool:
+    """b1(page N 末) + b2(page N+1 首) 是否是同一段落的跨页续接。"""
+    p1 = getattr(b1, "provenance", None)
+    p2 = getattr(b2, "provenance", None)
+    if not p1 or not p2:
+        return False
+    if p1.page_index is None or p2.page_index is None:
+        return False
+    if p2.page_index <= p1.page_index:
+        return False  # 同页或更早，不是跨页
+    # 首段不以句号结尾 = 可能是跨页续接
+    t = (b1.text or "").rstrip()
+    if t and t[-1] in _SENTENCE_END_CHARS:
+        return False
+    return True
