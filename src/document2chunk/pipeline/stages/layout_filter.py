@@ -215,3 +215,41 @@ def load_layout_data(layout_jsonl: str | Path) -> list[dict]:
 
     records.sort(key=lambda r: r.get("page_index", 0))
     return records
+
+
+def layout_to_pdf_coords(
+    coord: list[float], page_width: float, page_height: float
+) -> list[float]:
+    """版面分析坐标（DPI=136）→ PDF 坐标（DPI=72）。共享给 image_detection / pdf 表格校验。"""
+    if len(coord) < 4 or page_width <= 0 or page_height <= 0:
+        return coord
+    lw = page_width * (LAYOUT_DPI / PDF_DPI)
+    lh = page_height * (LAYOUT_DPI / PDF_DPI)
+    return [
+        coord[0] / lw * page_width,
+        coord[1] / lh * page_height,
+        coord[2] / lw * page_width,
+        coord[3] / lh * page_height,
+    ]
+
+
+def layout_boxes_for_page(
+    layout_data, page_idx: int, page_width: float, page_height: float
+) -> list[tuple[str, list[float]]]:
+    """取某页全部版面 box → [(label, pdf_bbox), ...]。
+
+    结构同 :meth:`LayoutFilterStage` 读取：``result.res.boxes[].{label, coordinate}``。
+    供 image_detection（图分类）与 pdf 表格校验复用（designs/004）。
+    """
+    if not layout_data or page_idx >= len(layout_data) or page_width <= 0:
+        return []
+    page_layout = layout_data[page_idx]
+    boxes = page_layout.get("result", {}).get("res", {}).get("boxes", []) or []
+    out: list[tuple[str, list[float]]] = []
+    for box in boxes:
+        coord = box.get("coordinate") or box.get("bbox") or []
+        if len(coord) >= 4:
+            out.append(
+                (str(box.get("label", "")).lower(), layout_to_pdf_coords(coord, page_width, page_height))
+            )
+    return out
