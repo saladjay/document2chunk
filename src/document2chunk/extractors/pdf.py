@@ -42,6 +42,7 @@ from document2chunk.pipeline import (
     split_pipeline,
 )
 from document2chunk.pipeline.config import IMAGE_FORMAT, IMAGE_MIN_AREA
+from document2chunk.pipeline.stages.layout_filter import layout_boxes_for_page
 
 _logger = logging.getLogger("document2chunk.extractors.pdf")
 
@@ -109,6 +110,35 @@ def _table_to_markdown(table_data: list[list[Any]]) -> str:
     return "\n".join(md_lines)
 
 
+# ---- 表格校验（designs/004 §3.2：修封面/排版被误判为表）----
+TABLE_MIN_ROWS = 2
+TABLE_MIN_COLS = 2
+
+
+def _validate_table(
+    bbox: list[float],
+    rows: list,
+    layout_boxes: list[tuple[str, list[float]]] | None,
+) -> bool:
+    """判定检出的「表」是否为真表（保留）；否则降级为文字（designs/004 §3.2）。
+
+    保留条件（满足其一）：
+    - layout-backed：存在 ``table`` 版面框与该 bbox 显著重叠；或
+    - 启发式：行数 ≥ ``TABLE_MIN_ROWS``、列数 ≥ ``TABLE_MIN_COLS``、非全空。
+    """
+    if layout_boxes:
+        for label, lbox in layout_boxes:
+            if label == "table" and _bbox_overlap(bbox, lbox, 0.3):
+                return True
+    if rows and len(rows) >= TABLE_MIN_ROWS:
+        max_cols = max((len(r or []) for r in rows), default=0)
+        if max_cols >= TABLE_MIN_COLS and any(
+            c and str(c).strip() for r in rows for c in (r or [])
+        ):
+            return True
+    return False
+
+
 def _open_pymupdf(source: SourceLike):
     """打开 PDF（path 或 bytes），返回 (doc, source)。"""
     import pymupdf
@@ -159,6 +189,7 @@ class PyMuPDFSpanExtractor:
         extract_tables: bool = True,
         extract_images: bool = True,
         image_dir: str | Path | None = None,
+        layout_data=None,
     ) -> list[RawPage]:
         """提取所有目标页的原始 element + 图片信息。
 
@@ -168,6 +199,7 @@ class PyMuPDFSpanExtractor:
             extract_tables: 是否提取表格。
             extract_images: 是否提取图片信息（image_dir 提供时另存文件）。
             image_dir: 图片保存目录；None 则不落盘（IR 不引用磁盘路径）。
+            layout_data: 版面分析结果（可选）；用于表格校验（designs/004 §3.2）。
         """
         doc = _open_pymupdf(source)
         total = len(doc)
@@ -181,8 +213,11 @@ class PyMuPDFSpanExtractor:
         raw_pages: list[RawPage] = []
         for page_idx in target_pages:
             page = doc[page_idx]
+            layout_boxes = layout_boxes_for_page(
+                layout_data, page_idx, page.rect.width, page.rect.height
+            )
             elements = self._extract_raw_elements(
-                page, page_idx, tables_by_page.get(page_idx, []), extract_tables
+                page, page_idx, tables_by_page.get(page_idx, []), extract_tables, layout_boxes
             )
             image_infos = (
                 self._extract_page_images(doc, page, page_idx, image_dir)
@@ -252,30 +287,40 @@ class PyMuPDFSpanExtractor:
         page_idx: int,
         pdfplumber_tables: list[tuple[list[float], list]],
         extract_tables: bool,
+        layout_boxes: list[tuple[str, list[float]]] | None = None,
     ) -> list[dict]:
-        """从 PyMuPDF page 提取行级 element + 表格（纯提取，不含分类逻辑）。"""
+        """从 PyMuPDF page 提取行级 element + 表格（纯提取，不含分类逻辑）。
+
+        表格先经 :func:`_validate_table` 校验（designs/004 §3.2）：误判的表（封面/排版）
+        被降级——不当表，其文本行正常提取，不被排除。
+        """
         elements: list[dict] = []
         order_index = 0
 
-        # 1. pdfplumber 表格（primary）
+        # 1. pdfplumber 表格（primary）— 校验后保留
         for bbox, rows in pdfplumber_tables:
+            if not _validate_table(bbox, rows, layout_boxes):
+                continue  # 降级：不当表，其文字正常提取
             markdown = _table_to_markdown(rows)
             elements.append(
                 self._make_table_element(bbox, markdown, rows, page_idx, order_index)
             )
             order_index += 1
 
-        # 2. PyMuPDF 兜底：仅当本页尚无表格时尝试
+        # 2. PyMuPDF 兜底：仅当本页尚无表格时尝试（同样校验）
         if extract_tables and not any(e.get("type") == "table" for e in elements):
             try:
                 tables = page.find_tables()
                 if tables.tables:
                     for table in tables.tables:
                         rows = table.extract() or []
+                        tbbox = list(table.bbox)
+                        if not _validate_table(tbbox, rows, layout_boxes):
+                            continue  # 降级
                         markdown = _table_to_markdown(rows) or ""
                         elements.append(
                             self._make_table_element(
-                                list(table.bbox), markdown, rows, page_idx, order_index
+                                tbbox, markdown, rows, page_idx, order_index
                             )
                         )
                         order_index += 1
@@ -590,6 +635,7 @@ class PdfExtractor:
             extract_tables=True,
             extract_images=extract_images,
             image_dir=image_dir,
+            layout_data=layout_data,
         )
         if not raw_pages:
             return ExtractionResult(
