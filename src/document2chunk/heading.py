@@ -214,3 +214,53 @@ def _is_cross_page_continuation(b1: ParagraphNode, b2: ParagraphNode) -> bool:
     if t and t[-1] in _SENTENCE_END_CHARS:
         return False
     return True
+
+
+# ── Phase 2C: 跨页页眉/页码过滤 ──
+
+def filter_cross_page_noise(
+    content: List[BlockNode], *, strip_ratio: float = 0.10, min_repeat: int = 2
+) -> List[BlockNode]:
+    """移除跨页重复的页眉/页脚：文本在 ≥2 页的顶部/底部 strip 区重复出现 → 移除。
+
+    与 LayoutFilter 的固定百分比互补：LayoutFilter 先做粗滤（可能误删）；
+    本函数做**后处理精滤**——只移除跨页重复的幸存块，不动独有内容。
+    """
+    from collections import Counter, defaultdict
+
+    page_max_y: dict = defaultdict(float)
+    for b in content:
+        prov = getattr(b, "provenance", None)
+        if prov and prov.bbox and prov.page_index is not None:
+            page_max_y[prov.page_index] = max(page_max_y[prov.page_index], prov.bbox[3])
+
+    strip_texts: Counter = Counter()
+    for b in content:
+        prov = getattr(b, "provenance", None)
+        if not prov or not prov.bbox or prov.page_index is None:
+            continue
+        ph = page_max_y.get(prov.page_index, 0)
+        if ph <= 0:
+            continue
+        y0, y1 = prov.bbox[1], prov.bbox[3]
+        if y0 < ph * strip_ratio or y1 > ph * (1 - strip_ratio):
+            t = (getattr(b, "text", "") or "").strip()
+            if t:
+                strip_texts[t] += 1
+
+    noise = {t for t, c in strip_texts.items() if c >= min_repeat}
+    if not noise:
+        return content
+
+    result = []
+    for b in content:
+        prov = getattr(b, "provenance", None)
+        t = (getattr(b, "text", "") or "").strip()
+        if t in noise and prov and prov.bbox and prov.page_index is not None:
+            ph = page_max_y.get(prov.page_index, 0)
+            if ph > 0:
+                y0, y1 = prov.bbox[1], prov.bbox[3]
+                if y0 < ph * strip_ratio or y1 > ph * (1 - strip_ratio):
+                    continue  # 页眉/页脚，跳过
+        result.append(b)
+    return result

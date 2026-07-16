@@ -687,8 +687,10 @@ class PdfExtractor:
 
         # 8. 共享标题定级（编号正则覆盖 AutoLevel + 多行合并，designs/005）
         from document2chunk.heading import calibrate, join_cross_page_paragraphs
+        from document2chunk.heading import filter_cross_page_noise
         blocks = calibrate(blocks, metadata, use_height_fallback=False)
         blocks = join_cross_page_paragraphs(blocks)
+        blocks = filter_cross_page_noise(blocks)
 
         return ExtractionResult(
             content=blocks,

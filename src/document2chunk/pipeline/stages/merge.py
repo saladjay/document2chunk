@@ -21,7 +21,7 @@ from collections import Counter
 from document2chunk.pipeline.base import PipelineContext
 
 # 间距大于「标准行间距 × 此倍数」视为段落分隔（不合并）
-_PARAGRAPH_BREAK_SPACING_RATIO = 1.8
+_PARAGRAPH_BREAK_SPACING_RATIO = 1.5
 # 间距聚类步长（pt）——消除浮点噪声后取众数
 _SPACING_BUCKET = 0.1
 
