@@ -203,6 +203,39 @@ def _elem(text, size, bbox, bold_flags=False):
     }
 
 
+# ---------- 段落合并：行间距防过度合并 ----------
+
+
+def test_merge_spacing_prevents_overmerge():
+    """间距 > 标准行间距 × 1.8 → 分段；小间距 → 合并。"""
+    from document2chunk.pipeline.stages.merge import MergeStage
+
+    def p(text, y0, y1):
+        return {
+            "type": "paragraph", "level": None, "text": text, "markdown": text,
+            "bbox": [72, y0, 300, y1], "order_index": 0,
+            "style": {"font": "SimSun", "size": 12.0, "flags": 0}, "spans": [],
+        }
+
+    ctx = PipelineContext(page_width=595, page_height=842)
+
+    # 3 行（间距 2pt）→ 1 段；断（间距 10pt）；2 行（间距 2pt）→ 1 段
+    elems = [p("a", 0, 10), p("b", 12, 22), p("c", 24, 34),
+             p("d", 44, 54), p("e", 56, 66), p("f", 68, 78)]
+    assert MergeStage._compute_standard_spacing(elems) == 2.0
+    out = MergeStage().process(elems, ctx)
+    assert len(out) == 2, [o["text"] for o in out]  # 不会全并成 1 段
+    assert out[0]["text"] == "abc" and out[1]["text"] == "def"
+
+    # 全小间距 → 合成 1 段
+    assert len(MergeStage().process([p("a", 0, 10), p("b", 12, 22)], ctx)) == 1
+
+    # low_confidence 传播仍有效
+    e = [p("a", 0, 10), {**p("b", 12, 22), "low_confidence": True}]
+    assert MergeStage().process(e, ctx)[0].get("low_confidence") is True
+    print("OK test_merge_spacing_prevents_overmerge")
+
+
 # ---------- runner ----------
 
 
@@ -212,6 +245,7 @@ def main():
     test_split_pipeline_shared_debug_counter()
     test_split_stages_injection()
     test_body_baseline_preserved_without_saved_body()
+    test_merge_spacing_prevents_overmerge()
     print("\nALL PIPELINE TESTS PASSED")
 
 
