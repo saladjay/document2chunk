@@ -88,10 +88,13 @@ class OcrExtractor:
             # 优先用每页 markdown，回退顶层 markdown
             md = ((lp.get("markdown") or {}).get("text")) or resp.get("markdown", "")
             images = resp.get("images") or (lp.get("markdown") or {}).get("images") or {}
-            prl = lp.get("parsing_res_list") or []
-            # 服务坐标空间（1000 归一化），用于把 bbox 换算到源自然坐标系
-            sw = float(lp.get("width") or 1000)
-            sh = float(lp.get("height") or 1000)
+            # 真实服务把 parsing_res_list / width / height 放在 prunedResult 下
+            # （合成 fixture 放在 lp 顶层——两者都兼容）
+            pr = lp.get("prunedResult") or {}
+            prl = lp.get("parsing_res_list") or pr.get("parsing_res_list") or []
+            # 服务坐标空间（block_bbox 所在），用于把 bbox 换算到源自然坐标系
+            sw = float(pr.get("width") or lp.get("width") or 1000)
+            sh = float(pr.get("height") or lp.get("height") or 1000)
             page_blocks = build_page_blocks(
                 md, prl, images, page_index, idc, image_out_dir, extract_images, img_counter,
                 pw, ph, sw, sh,
