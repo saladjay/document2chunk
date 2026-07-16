@@ -26,3 +26,8 @@ Thumbs.db
 # 输出
 outputs/
 *.jsonl.tmp
+
+# Secrets / 环境变量（含真实 token，勿提交；.env.example 是模板可提交）
+.env
+.env.local
+.env.*.local
