@@ -217,6 +217,14 @@ def _image_to_image_node(
     idgen: _IdGen,
 ) -> ImageNode:
     image_id = elem.get("text", "") or elem.get("image_id", "")
+    fmt = None
+    alt = None
+    if image_info:
+        fmt = image_info.get("format")
+        alt = image_info.get("alt")
+    # 补扩展名：确保 image_id 含 .png/.jpg 等（与落盘文件名一致，markdown 引用对得上）
+    if fmt and image_id and "." not in image_id.rsplit("/", 1)[-1]:
+        image_id = f"{image_id}.{fmt}"
 
     # 尺寸来源：优先 image_info（PDF 提取前端）；否则用 element bbox 估算（OCR 占位）
     width_pt = height_pt = None
