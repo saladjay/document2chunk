@@ -685,18 +685,29 @@ class PdfExtractor:
 
         metadata = self._metadata(source, page_count=len(raw_pages), custom=custom)
 
-        # 8. 共享标题定级（编号正则覆盖 AutoLevel + 多行合并，designs/005）
+        # 8. 共享后处理（自适应标题定级 + join + 过滤 + 附件拆分，designs/007）
         from document2chunk.heading import calibrate, join_cross_page_paragraphs
-        from document2chunk.heading import filter_cross_page_noise
-        blocks = calibrate(blocks, metadata, use_height_fallback=False)
-        blocks = join_cross_page_paragraphs(blocks)
-        blocks = filter_cross_page_noise(blocks)
+        from document2chunk.heading import filter_cross_page_noise, split_attachments
+        page_widths = {}
+        for elems, ctx in pages_data:
+            if hasattr(ctx, "page_width") and hasattr(ctx, "page_index"):
+                page_widths[ctx.page_index] = ctx.page_width
+        pp_log: list = []
+        blocks = calibrate(blocks, metadata, use_height_fallback=False, page_widths=page_widths, _log=pp_log)
+        blocks = join_cross_page_paragraphs(blocks, _log=pp_log)
+        blocks = filter_cross_page_noise(blocks, _log=pp_log)
+        main_content, attach_segments = split_attachments(blocks, _log=pp_log)
+        if self._debug_dir:
+            import json as _json, os as _os
+            _os.makedirs(str(self._debug_dir), exist_ok=True)
+            with open(_os.path.join(str(self._debug_dir), "postprocess_log.json"), "w", encoding="utf-8") as f:
+                _json.dump(pp_log, f, ensure_ascii=False, indent=2)
 
-        return ExtractionResult(
-            content=blocks,
-            metadata=metadata,
-            toc_entries=toc_entries or None,
-        )
+        result = ExtractionResult(content=main_content, metadata=metadata, toc_entries=toc_entries or None)
+        for seg in attach_segments:
+            result.attachments.append(ExtractionResult(content=seg, metadata=self._metadata(
+                source, page_count=0, custom={"is_attachment": True})))
+        return result
 
     @staticmethod
     def _metadata(

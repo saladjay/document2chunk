@@ -221,6 +221,7 @@ class LogicalDocument(BaseModel):
     content: List[BlockNode] = Field(default_factory=list)  # 扁平阅读序列
     section_tree: SectionNode  # 章节层级（根 level=0）
     block_to_section: Dict[str, str] = Field(default_factory=dict)  # block_id → section_id
+    attachments: List["LogicalDocument"] = Field(default_factory=list)  # 拆分的附件（designs/007 R6）
 
     def iter_blocks(self):
         """深度优先遍历所有块节点（含表格单元格、列表项内的嵌套块）。"""

@@ -159,8 +159,8 @@ def draw_annotations(
 
     overlay = Image.new("RGBA", extended.size, (0, 0, 0, 0))
     overlay_draw = ImageDraw.Draw(overlay)
-    # 顶部标题栏（半透明白）
-    overlay_draw.rectangle([0, 0, img.width, _HEADER_HEIGHT], fill=(255, 255, 255, 200))
+    # 顶部标题栏底线（不填充背景，避免遮挡最上方块）—— designs/007 R3
+    overlay_draw.line([(0, _HEADER_HEIGHT), (img.width, _HEADER_HEIGHT)], fill=(200, 200, 200), width=1)
     # 底部统计面板背景
     overlay_draw.rectangle([0, page_h, img.width, new_height], fill=(255, 255, 255, 240))
 

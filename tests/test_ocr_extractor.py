@@ -201,11 +201,14 @@ def test_heading_calibration_doc_level():
     out = calibrate(content, md)
 
     heads = [(b.level, b.text) for b in out if isinstance(b, HeadingNode)]
-    assert heads == [(1, "一、A"), (1, "二、B"), (1, "三、C"), (1, "四、D"), (2, "（一）子项")], heads
-    # 大标题 → metadata（最长=title，版头=custom）
+    # 决策 C：大标题=H1 + metadata.title；编号层级 +1（一、→H2,（一）→H3）
+    assert heads == [(1, "关于改进管理方式切实落实耕地占补平衡的通知"),
+                     (2, "一、A"), (2, "二、B"), (2, "三、C"), (2, "四、D"),
+                     (3, "（一）子项")], heads
+    # 大标题 → metadata.title（最长）；版头 → metadata.custom（降级 Paragraph，不丢）
     assert md.title == "关于改进管理方式切实落实耕地占补平衡的通知"
     assert md.custom.get("doc_titles") == ["国土资源部文件"]
-    # 大标题降级为 ParagraphNode（文本不丢）
+    # 版头降级为 ParagraphNode（文本不丢）
     para_texts = [b.text for b in out if isinstance(b, ParagraphNode)]
     assert "国土资源部文件" in para_texts
 

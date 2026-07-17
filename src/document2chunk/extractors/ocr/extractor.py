@@ -10,6 +10,7 @@ from document2chunk.extractors.ocr._client import OcrServiceClient
 from document2chunk.extractors.ocr._config import OcrConfig
 from document2chunk.extractors.ocr._exceptions import OcrServiceError
 from document2chunk.heading import calibrate, filter_cross_page_noise, join_cross_page_paragraphs
+from document2chunk.heading import split_attachments
 from document2chunk.extractors.ocr._mapping import _Idc, build_page_blocks
 from document2chunk.ir import DocumentMetadata, ExtractionResult, SourceType
 
@@ -117,8 +118,20 @@ class OcrExtractor:
             page_count=pcount,
             generator="paddleocr-service",
         )
-        # 文档级标题重定级（编号优先 + 高度聚类；大标题抽 metadata）—— designs/004
-        blocks = calibrate(blocks, metadata)
-        blocks = join_cross_page_paragraphs(blocks)
-        blocks = filter_cross_page_noise(blocks)
-        return ExtractionResult(content=blocks, metadata=metadata, toc_entries=None)
+        # 文档级标题自适应定级 + 跨页 join + 页眉过滤 + 附件拆分（designs/007）
+        pp_log: list = []
+        blocks = calibrate(blocks, metadata, _log=pp_log)
+        blocks = join_cross_page_paragraphs(blocks, _log=pp_log)
+        blocks = filter_cross_page_noise(blocks, _log=pp_log)
+        main_content, attach_segments = split_attachments(blocks, _log=pp_log)
+        # 中间过程日志
+        if dump_dir:
+            import json as _json, os as _os
+            _os.makedirs(str(dump_dir), exist_ok=True)
+            with open(_os.path.join(str(dump_dir), "postprocess_log.json"), "w", encoding="utf-8") as f:
+                _json.dump(pp_log, f, ensure_ascii=False, indent=2)
+        result = ExtractionResult(content=main_content, metadata=metadata, toc_entries=None)
+        for seg in attach_segments:
+            result.attachments.append(ExtractionResult(content=seg, metadata=DocumentMetadata(
+                source_type=SourceType.OCR, source_file=source_file, generator="attachment")))
+        return result

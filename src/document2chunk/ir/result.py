@@ -36,3 +36,7 @@ class ExtractionResult(BaseModel):
     content: List[BlockNode] = Field(default_factory=list)
     metadata: DocumentMetadata
     toc_entries: Optional[List[TocEntry]] = None
+    attachments: List["ExtractionResult"] = Field(default_factory=list)  # 拆分的附件（designs/007 R6）
+
+
+ExtractionResult.model_rebuild()
