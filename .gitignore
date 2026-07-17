@@ -31,3 +31,4 @@ outputs/
 .env
 .env.local
 .env.*.local
+.claude/worktrees/
