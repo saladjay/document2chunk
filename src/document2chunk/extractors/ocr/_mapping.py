@@ -108,16 +108,25 @@ def build_page_blocks(
     page_h: Optional[float] = None,
     service_w: float = 1000.0,
     service_h: float = 1000.0,
+    det_scores: Optional[List[float]] = None,
 ) -> List[BlockNode]:
-    """单页 markdown+parsing_res_list → BlockNode 列表（带 provenance）。"""
+    """单页 markdown+parsing_res_list → BlockNode 列表（带 provenance + confidence）。"""
     elements = parse_markdown(markdown)
-    content_blocks = [b for b in (parsing_res_list or []) if b.get("block_label") not in DROP_LABELS]
+    # content_blocks + 对齐的 confidence scores（过滤 DROP_LABELS 后）
+    content_blocks: List[Dict[str, Any]] = []
+    content_scores: List[Optional[float]] = []
+    for j, b in enumerate(parsing_res_list or []):
+        if b.get("block_label") not in DROP_LABELS:
+            content_blocks.append(b)
+            score = det_scores[j] if (det_scores and j < len(det_scores)) else None
+            content_scores.append(score)
 
     out: List[BlockNode] = []
     for i, el in enumerate(elements):
         bbox = content_blocks[i].get("block_bbox") if i < len(content_blocks) else None
         bbox = _convert_bbox(bbox, page_w, page_h, service_w, service_h)
-        prov = Provenance(source_type=SourceType.OCR, page_index=page_index, bbox=bbox)
+        conf = content_scores[i] if i < len(content_scores) else None
+        prov = Provenance(source_type=SourceType.OCR, page_index=page_index, bbox=bbox, confidence=conf)
         node = _element_to_node(el, images, page_index, idc, image_out_dir, extract_images, _img_counter, prov)
         if node is not None:
             out.append(node)

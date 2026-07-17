@@ -95,10 +95,20 @@ class OcrExtractor:
             # 服务坐标空间（block_bbox 所在），用于把 bbox 换算到源自然坐标系
             sw = float(pr.get("width") or lp.get("width") or 1000)
             sh = float(pr.get("height") or lp.get("height") or 1000)
+            # 检测置信度（VL 模型的 layout_det_res.boxes[].score，与 parsing_res_list 1:1 对齐）
+            det_boxes = (pr.get("layout_det_res") or {}).get("boxes") or []
+            det_scores = [b.get("score") for b in det_boxes] if det_boxes else None
             page_blocks = build_page_blocks(
                 md, prl, images, page_index, idc, image_out_dir, extract_images, img_counter,
-                pw, ph, sw, sh,
+                pw, ph, sw, sh, det_scores=det_scores,
             )
+            # 低置信度过滤
+            if self._cfg.min_confidence > 0:
+                page_blocks = [
+                    b for b in page_blocks
+                    if not (b.provenance and b.provenance.confidence is not None
+                            and b.provenance.confidence < self._cfg.min_confidence)
+                ]
             blocks.extend(page_blocks)
 
         metadata = DocumentMetadata(

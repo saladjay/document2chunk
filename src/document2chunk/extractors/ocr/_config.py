@@ -61,6 +61,7 @@ class OcrConfig:
     model: str = "vl"          # vl | pp-ocrv6 | unlimited
     timeout: float = 180.0
     max_retries: int = 3
+    min_confidence: float = 0.3  # 低于此置信度的块被过滤（0=不过滤）
 
     @classmethod
     def from_env(cls) -> "OcrConfig":
@@ -71,6 +72,7 @@ class OcrConfig:
             model=_env("DOCUMENT2CHUNK_OCR_MODEL", "vl"),
             timeout=float(_env("DOCUMENT2CHUNK_OCR_TIMEOUT", "180")),
             max_retries=int(_env("DOCUMENT2CHUNK_OCR_MAX_RETRIES", "3")),
+            min_confidence=float(_env("DOCUMENT2CHUNK_OCR_MIN_CONFIDENCE", "0.3")),
         )
 
 
