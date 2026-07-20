@@ -204,8 +204,8 @@ def calibrate(
         if _log is not None:
             _log.append(kw)
 
-    # 0. 编号标题提升（ParagraphNode → HeadingNode，补 AutoLevel 漏检）
-    content = _promote_numbered_headings(content, _log)
+    # 0. 编号标题提升已移至 ClassificationStage（多信号综合判定）
+    # calibrate 不再做 paragraph→heading 提升（避免把段落前缀误判为标题）
 
     # 1. 正文基准高度
     para_hs = [_bbox_h(b) for b in content if isinstance(b, ParagraphNode)]

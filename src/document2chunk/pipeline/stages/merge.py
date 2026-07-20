@@ -114,13 +114,9 @@ class MergeStage:
         standard_spacing: float | None = None,
     ) -> bool:
         """判断两个 paragraph 是否可以合并（含行间距判断）。"""
-        # 编号开头的元素是标题，不参与合并（防止 MergeStage 吞掉编号标题）
-        import re as _re
-        _NUM = r"[一二三四五六七八九十百千零〇两]+"
-        _heading_re = _re.compile(rf"^({_NUM}、|第{_NUM}[章节条]|[（(]{_NUM}[）)])")
-        t1 = (elem1.get("text") or "").strip()
-        t2 = (elem2.get("text") or "").strip()
-        if _heading_re.match(t1) or _heading_re.match(t2):
+        # ClassificationStage 已用多信号判定 heading/paragraph
+        # 只保护 heading/title 不被合并；paragraph（即使编号开头）允许合并
+        if elem1.get("type") in ("heading", "title") or elem2.get("type") in ("heading", "title"):
             return False
 
         # 层级必须相同
