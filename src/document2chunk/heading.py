@@ -117,6 +117,44 @@ def _merge_headings(content: List[BlockNode]) -> List[BlockNode]:
 
 
 # ════════════════════════════════════════
+#  ⓪ _promote_numbered_headings — 编号标题提升
+# ════════════════════════════════════════
+
+_PROMOTE_MAX_LEN = 40  # 短于此长度的编号段落 → 提升为 heading
+
+
+def _promote_numbered_headings(
+    content: List[BlockNode], _log: Optional[List[dict]] = None
+) -> List[BlockNode]:
+    """将编号开头 + 短文本的 ParagraphNode 提升为 HeadingNode。
+
+    解决 edited-PDF AutoLevel 漏检（字号同正文但带编号的标题）。
+    """
+    def _log_add(**kw):
+        if _log is not None:
+            _log.append(kw)
+
+    result: List[BlockNode] = []
+    for b in content:
+        if isinstance(b, ParagraphNode):
+            text = (b.text or "").strip()
+            st = style_of(text)
+            if st is not None and len(text) <= _PROMOTE_MAX_LEN:
+                result.append(HeadingNode(
+                    id=b.id, level=1, text=text,
+                    runs=getattr(b, "runs", []),
+                    provenance=b.provenance,
+                    metadata=getattr(b, "metadata", {}),
+                ))
+                _log_add(section="promote", block_id=b.id, text=text[:40],
+                         action="paragraph→heading", detected=st,
+                         reason=f"编号({st})+短文本({len(text)}字符)")
+                continue
+        result.append(b)
+    return result
+
+
+# ════════════════════════════════════════
 #  ① calibrate — 自适应标题层级
 # ════════════════════════════════════════
 
@@ -136,6 +174,9 @@ def calibrate(
     def _log_add(**kw):
         if _log is not None:
             _log.append(kw)
+
+    # 0. 编号标题提升（ParagraphNode → HeadingNode，补 AutoLevel 漏检）
+    content = _promote_numbered_headings(content, _log)
 
     # 1. 正文基准高度
     para_hs = [_bbox_h(b) for b in content if isinstance(b, ParagraphNode)]
