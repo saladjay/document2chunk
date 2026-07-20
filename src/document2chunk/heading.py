@@ -100,7 +100,8 @@ def _merge_headings(content: List[BlockNode]) -> List[BlockNode]:
             count = 0
             while j < len(content) and count < _MERGE_PAIR_LIMIT:
                 nxt = content[j]
-                if isinstance(nxt, HeadingNode) and nxt.level == b.level and _should_merge(merged_text, nxt.text):
+                if isinstance(nxt, HeadingNode) and _should_merge(merged_text, nxt.text):
+                    # 放宽 level 一致要求：无编号标题跨行合并（如文章标题拆两行）
                     merged_text += nxt.text
                     j += 1
                     count += 1
@@ -126,30 +127,58 @@ _PROMOTE_MAX_LEN = 40  # 短于此长度的编号段落 → 提升为 heading
 def _promote_numbered_headings(
     content: List[BlockNode], _log: Optional[List[dict]] = None
 ) -> List[BlockNode]:
-    """将编号开头 + 短文本的 ParagraphNode 提升为 HeadingNode。
+    """将编号开头的 ParagraphNode 提升为 HeadingNode（含长文本拆分）。
 
     解决 edited-PDF AutoLevel 漏检（字号同正文但带编号的标题）。
+    - 短文本（≤40 字符）→ 整体提升。
+    - 长文本 → 在首个句号处拆分：前半=标题，后半=正文段落。
     """
     def _log_add(**kw):
         if _log is not None:
             _log.append(kw)
 
     result: List[BlockNode] = []
+    _body_n = 0
     for b in content:
         if isinstance(b, ParagraphNode):
             text = (b.text or "").strip()
             st = style_of(text)
-            if st is not None and len(text) <= _PROMOTE_MAX_LEN:
-                result.append(HeadingNode(
-                    id=b.id, level=1, text=text,
-                    runs=getattr(b, "runs", []),
-                    provenance=b.provenance,
-                    metadata=getattr(b, "metadata", {}),
-                ))
-                _log_add(section="promote", block_id=b.id, text=text[:40],
-                         action="paragraph→heading", detected=st,
-                         reason=f"编号({st})+短文本({len(text)}字符)")
-                continue
+            if st is not None:
+                # 统一逻辑：先在首个句号处拆分标题与正文
+                parts = re.split(r"[。！？]", text, maxsplit=1)
+                heading_candidate = parts[0].strip()
+                body = parts[1].strip() if len(parts) > 1 else ""
+
+                if not body:
+                    # 无正文 → 整体提升（仅短文本）
+                    if len(heading_candidate) <= _PROMOTE_MAX_LEN:
+                        result.append(HeadingNode(
+                            id=b.id, level=1, text=heading_candidate,
+                            runs=getattr(b, "runs", []),
+                            provenance=b.provenance,
+                            metadata=getattr(b, "metadata", {}),
+                        ))
+                        _log_add(section="promote", block_id=b.id, text=heading_candidate[:40],
+                                 action="paragraph→heading", detected=st,
+                                 reason=f"编号({st})+无正文({len(heading_candidate)}字符)")
+                        continue
+                elif len(heading_candidate) <= _PROMOTE_MAX_LEN:
+                    # 有正文 → 拆分：标题 + 正文段
+                    result.append(HeadingNode(
+                        id=b.id, level=1, text=heading_candidate,
+                        runs=getattr(b, "runs", []),
+                        provenance=b.provenance,
+                        metadata=getattr(b, "metadata", {}),
+                    ))
+                    _body_n += 1
+                    result.append(ParagraphNode(
+                        id=f"{b.id}_b{_body_n}", text=body,
+                        provenance=b.provenance,
+                    ))
+                    _log_add(section="promote", block_id=b.id, text=heading_candidate[:40],
+                             action="split→heading+body", detected=st,
+                             reason=f"编号({st})+拆分(标题{len(heading_candidate)}+正文{len(body)}字符)")
+                    continue
         result.append(b)
     return result
 
@@ -206,6 +235,25 @@ def calibrate(
 
     has_doc_title = len(doc_title_indices) > 0
     level_offset = 1 if has_doc_title else 0
+
+    # Fallback：若 centered/height 没检测到大标题，但第一个非编号 H1/H2 heading 像文章标题 → 当作 doc_title
+    if not has_doc_title:
+        for i, b in enumerate(content):
+            if not isinstance(b, HeadingNode):
+                continue
+            txt = (b.text or "").strip()
+            if RE_APPENDIX.match(txt):
+                continue
+            st = style_of(txt)
+            if st is None and b.level <= 2 and len(txt) >= 8:
+                # 无编号 + H1/H2 + 有一定长度 → 文章标题
+                doc_title_indices.append(i)
+                has_doc_title = True
+                level_offset = 1
+                _log_add(section="calibrate", block_id=b.id, text=txt[:40],
+                         detected="doc_title(fallback)", action="→H1+metadata",
+                         reason=f"首个无编号H{b.level}标题(长度{len(txt)})")
+                break
 
     # 最长大标题 → metadata.title + H1
     main_title_block: Optional[HeadingNode] = None
