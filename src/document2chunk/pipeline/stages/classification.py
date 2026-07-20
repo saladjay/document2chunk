@@ -104,29 +104,33 @@ class ClassificationStage:
                     action="assign",
                 )
 
-        # 信号 2：编号模式
+        # 信号 2：编号模式（按 depth 分层，同字号同字体 = 语义亲缘）
         sec_num = extract_section_number(text)
         sec_depth = section_number_depth(sec_num) if sec_num else 0
         has_body = bool(_BODY_AFTER_PUNCT_RE.search(text))
 
-        if sec_num and not has_body:
-            # 纯标题（编号开头 + 无句号后正文）→ 强信号
-            scorer.add_score(
-                stage="classification",
-                rule="section_number_pure",
-                score=_SCORE_SECTION_NUM_PURE,
-                action="boost",
-                note=f"{sec_num} depth={sec_depth}",
-            )
-        elif sec_num and has_body:
-            # 编号 + 正文混合 → 弱信号（可能是标题也可能是带编号的正文段）
-            scorer.add_score(
-                stage="classification",
-                rule="section_number_mixed",
-                score=_SCORE_SECTION_NUM_MIXED,
-                action="boost",
-                note=f"{sec_num} (含正文, 长度{len(text)})",
-            )
+        if sec_num:
+            if sec_depth == 1:
+                # 章级（一、/第X章）→ 强 heading 信号（即使同字号）
+                score = 0.20 if has_body else _SCORE_SECTION_NUM_PURE
+                scorer.add_score(
+                    stage="classification",
+                    rule=f"section_number_d1{'_mixed' if has_body else ''}",
+                    score=score,
+                    action="boost",
+                    note=f"{sec_num} depth=1",
+                )
+            elif sec_depth >= 2 and not is_body:
+                # 子级（（一）/第X节）+ 字号不同于正文 → 弱 heading 信号
+                score = 0.15 if has_body else 0.45
+                scorer.add_score(
+                    stage="classification",
+                    rule=f"section_number_d{sec_depth}{'_mixed' if has_body else ''}",
+                    score=score,
+                    action="boost",
+                    note=f"{sec_num} depth={sec_depth} (非正文字号)",
+                )
+            # depth >= 2 + is_body → 不加分（同字号同字体的子级编号 = 段落标记）
 
         # 信号 3：独立成行
         if page_width > 0 and page_height > 0:
