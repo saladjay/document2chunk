@@ -117,17 +117,26 @@ def _validate_table(
     bbox: list[float],
     rows: list,
     layout_boxes: list[tuple[str, list[float]]] | None,
+    page_w: float = 0.0,
+    page_h: float = 0.0,
 ) -> bool:
-    """判定检出的「表」是否为真表（保留）；否则降级为文字（designs/004 §3.2）。
+    """判定检出的「表」是否为真表（保留）；否则降级为文字（designs/004 §3.2 + R11）。
 
     保留条件（满足其一）：
     - layout-backed：存在 ``table`` 版面框与该 bbox 显著重叠；或
     - 启发式：行数 ≥ ``TABLE_MIN_ROWS``、列数 ≥ ``TABLE_MIN_COLS``、非全空。
+
+    拒绝条件：覆盖 >50% 页面且无 layout 确认 → HTML 版 PDF 整页布局误判为表格
+    （真表格极少覆盖过半首页，首页多为标题+正文）。
     """
     if layout_boxes:
         for label, lbox in layout_boxes:
             if label == "table" and _bbox_overlap(bbox, lbox, 0.3):
                 return True
+    if page_w and page_h and len(bbox) >= 4:
+        coverage = ((bbox[2] - bbox[0]) * (bbox[3] - bbox[1])) / (page_w * page_h)
+        if coverage > 0.5:
+            return False  # 整页布局误判（HTML 版 PDF 通病），降级为文字
     if rows and len(rows) >= TABLE_MIN_ROWS:
         max_cols = max((len(r or []) for r in rows), default=0)
         if max_cols >= TABLE_MIN_COLS and any(
@@ -294,10 +303,11 @@ class PyMuPDFSpanExtractor:
         """
         elements: list[dict] = []
         order_index = 0
+        pw, ph = page.rect.width, page.rect.height  # R11：整页表格覆盖判据
 
         # 1. pdfplumber 表格（primary）— 校验后保留
         for bbox, rows in pdfplumber_tables:
-            if not _validate_table(bbox, rows, layout_boxes):
+            if not _validate_table(bbox, rows, layout_boxes, pw, ph):
                 continue  # 降级：不当表，其文字正常提取
             markdown = _table_to_markdown(rows)
             elements.append(
@@ -313,7 +323,7 @@ class PyMuPDFSpanExtractor:
                     for table in tables.tables:
                         rows = table.extract() or []
                         tbbox = list(table.bbox)
-                        if not _validate_table(tbbox, rows, layout_boxes):
+                        if not _validate_table(tbbox, rows, layout_boxes, pw, ph):
                             continue  # 降级
                         markdown = _table_to_markdown(rows) or ""
                         elements.append(
