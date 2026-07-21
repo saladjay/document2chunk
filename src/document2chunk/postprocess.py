@@ -602,18 +602,34 @@ def calibrate_levels(
         h = _bbox_h(b)
         ratio = (h / body_h) if body_h else 0.0
         centered = _is_centered(b, page_widths)
-        # 高度检测（OCR ratio≥1.8 / edited 居中+ratio≥1.2）或 fallback（L1/H2 描述性标题）
-        by_height = (use_height_fallback and ratio >= DOC_TITLE_RATIO) or (
+        if (use_height_fallback and ratio >= DOC_TITLE_RATIO) or (
             not use_height_fallback and centered and ratio >= DOC_TITLE_EDITED_RATIO
-        )
-        by_fallback = b.level <= 2 and len(txt) >= 8
-        if by_height or by_fallback:
+        ):
             doc_title_indices.append(i)
             _log_add(section="calibrate", block_id=b.id, text=txt[:40],
                      detected="doc_title", action="→候选",
                      reason=f"ratio={ratio:.1f} centered={centered} L{b.level}")
 
     has_doc_title = len(doc_title_indices) > 0
+
+    # Fallback：无高度候选时，取首个无编号 L1/L2 + len≥8（窄，避免误降章节标题）
+    if not has_doc_title:
+        for i, b in enumerate(content):
+            if not isinstance(b, HeadingNode):
+                continue
+            txt = (b.text or "").strip()
+            if RE_APPENDIX.match(txt) or style_of(txt) is not None:
+                continue
+            if heading_text_counts[txt] > 1:
+                continue
+            if b.level <= 2 and len(txt) >= 8:
+                doc_title_indices.append(i)
+                has_doc_title = True
+                _log_add(section="calibrate", block_id=b.id, text=txt[:40],
+                         detected="doc_title(fallback)", action="→候选",
+                         reason=f"首个无编号H{b.level}(长度{len(txt)})")
+                break
+
     doc_title_set: set = set(doc_title_indices)
     level_offset = 1 if has_doc_title else 0
 
