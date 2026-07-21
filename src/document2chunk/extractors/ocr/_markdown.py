@@ -15,6 +15,10 @@ _IMAGE_LINE_RE = re.compile(r"^!\[([^\]]*)\]\(([^)]+)\)\s*$")
 _UL_RE = re.compile(r"^[-*]\s+(.*)$", re.S)
 _OL_RE = re.compile(r"^\d+[).]\s+(.*)$", re.S)
 _BLOCKMATH_RE = re.compile(r"^\$\$(.+)\$\$$", re.S)
+# HTML <img src="..."> —— OCR 服务把盖章/页眉渲染成 <div style=...><img .../></div>
+# 不转 image 元素会原样落入 paragraph 文本，输出 HTML（R5/R7）。src 即 images 字典 key。
+_HTML_IMG_RE = re.compile(r'<img\s[^>]*?\bsrc=["\']([^"\']+)["\'][^>]*>', re.I)
+_HTML_IMG_ALT_RE = re.compile(r'<img\s[^>]*?\balt=["\']([^"\']*)["\']', re.I)
 
 
 def parse_markdown(md: str) -> List[Dict[str, Any]]:
@@ -65,6 +69,16 @@ def parse_markdown(md: str) -> List[Dict[str, Any]]:
             flush()
             elements.append({"kind": "image", "alt": m.group(1), "ref": m.group(2)})
             continue
+
+        # HTML <img>（盖章/页眉：服务渲染成 <div><img src="imgs/..."/></div>）
+        if "<img" in b.lower():
+            m = _HTML_IMG_RE.search(b)
+            if m:
+                flush()
+                alt_m = _HTML_IMG_ALT_RE.search(b)
+                alt = (alt_m.group(1).strip() if alt_m and alt_m.group(1).strip() else "Image")
+                elements.append({"kind": "image", "alt": alt, "ref": m.group(1)})
+                continue
 
         m = _UL_RE.match(b)
         if m:
