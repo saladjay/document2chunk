@@ -21,7 +21,7 @@ from __future__ import annotations
 
 import re
 import statistics
-from collections import defaultdict
+from collections import Counter, defaultdict
 from typing import Any, Dict, List, Optional, Tuple
 
 from document2chunk.ir import BlockNode, DocumentMetadata, HeadingNode, ParagraphNode, TocEntry
@@ -112,6 +112,20 @@ def _is_centered(node, page_widths: Optional[Dict[int, float]] = None) -> bool:
 def _prov_page(node) -> Optional[int]:
     prov = getattr(node, "provenance", None)
     return getattr(prov, "page_index", None) if prov else None
+
+
+# 政策文种关键词（标题几乎总含其一；版头机关名不含）——主标题排序 tiebreaker
+_TITLE_KEYWORDS = (
+    "办法", "规定", "通知", "条例", "意见", "决定", "方案", "制度",
+    "公告", "命令", "细则", "目录", "清单", "标准", "规划", "纲要",
+)
+
+
+def _title_rank(b: BlockNode) -> tuple:
+    """主标题排序键：(含文种关键词/《》, 文本长度) —— 大者优先。"""
+    txt = (b.text or "")
+    has_kw = any(kw in txt for kw in _TITLE_KEYWORDS) or ("《" in txt and "》" in txt)
+    return (1 if has_kw else 0, len(txt.strip()))
 
 
 def _prov_bbox(node) -> Optional[list]:
@@ -571,7 +585,11 @@ def calibrate_levels(
     # 0c. toc 映射
     toc_map = _build_toc_mapping(toc_entries)
 
-    # 1. 检测大标题（无编号 + 高比例/居中）
+    # 1. 检测大标题。真标题在全文唯一；版头机关名/时间戳等页面家具跨页重复 →
+    # 用 heading 文本出现次数过滤掉重复项，避免把版头当标题。
+    heading_text_counts: "Counter[str]" = Counter(
+        (b.text or "").strip() for b in content if isinstance(b, HeadingNode)
+    )
     doc_title_indices: List[int] = []
     for i, b in enumerate(content):
         if not isinstance(b, HeadingNode):
@@ -579,42 +597,33 @@ def calibrate_levels(
         txt = (b.text or "").strip()
         if style_of(txt) is not None or RE_APPENDIX.match(txt):
             continue
+        if heading_text_counts[txt] > 1:
+            continue  # 跨页重复 = 页面家具，非文档标题
         h = _bbox_h(b)
         ratio = (h / body_h) if body_h else 0.0
         centered = _is_centered(b, page_widths)
-        if (use_height_fallback and ratio >= DOC_TITLE_RATIO) or (
+        # 高度检测（OCR ratio≥1.8 / edited 居中+ratio≥1.2）或 fallback（L1/H2 描述性标题）
+        by_height = (use_height_fallback and ratio >= DOC_TITLE_RATIO) or (
             not use_height_fallback and centered and ratio >= DOC_TITLE_EDITED_RATIO
-        ):
+        )
+        by_fallback = b.level <= 2 and len(txt) >= 8
+        if by_height or by_fallback:
             doc_title_indices.append(i)
             _log_add(section="calibrate", block_id=b.id, text=txt[:40],
-                     detected="doc_title", action="→H1+metadata", reason=f"ratio={ratio:.1f} centered={centered}")
+                     detected="doc_title", action="→候选",
+                     reason=f"ratio={ratio:.1f} centered={centered} L{b.level}")
 
     has_doc_title = len(doc_title_indices) > 0
-
-    # Fallback：无大标题但首个无编号 H1/H2 + len≥8 像文章标题
-    if not has_doc_title:
-        for i, b in enumerate(content):
-            if not isinstance(b, HeadingNode):
-                continue
-            txt = (b.text or "").strip()
-            if RE_APPENDIX.match(txt) or style_of(txt) is not None:
-                continue
-            if b.level <= 2 and len(txt) >= 8:
-                doc_title_indices.append(i)
-                has_doc_title = True
-                _log_add(section="calibrate", block_id=b.id, text=txt[:40],
-                         detected="doc_title(fallback)", action="→H1+metadata",
-                         reason=f"首个无编号H{b.level}(长度{len(txt)})")
-                break
-
+    doc_title_set: set = set(doc_title_indices)
     level_offset = 1 if has_doc_title else 0
 
     # 最长大标题 → metadata.title + H1；其余 → custom 降级 Paragraph
     main_title_block: Optional[HeadingNode] = None
-    doc_title_set = set(doc_title_indices)
     if has_doc_title:
         title_blocks = [content[i] for i in doc_title_indices]
-        title_blocks.sort(key=lambda b: len(b.text or ""), reverse=True)
+        # 主标题优先级：含政策文种关键词（办法/通知/规定/…）或《》者 > 同长度无关键词者
+        # （版头机关名与真标题常同长度，关键词区分：真标题含文种，版头不含）
+        title_blocks.sort(key=_title_rank, reverse=True)
         main_title_block = title_blocks[0]
         metadata.title = main_title_block.text
         if len(title_blocks) > 1:
