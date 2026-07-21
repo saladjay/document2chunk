@@ -480,6 +480,51 @@ def _promote_doc_title_paragraphs(
     return out
 
 
+def _detect_doc_title_indices(
+    content: List[BlockNode],
+    body_h: float,
+    page_widths: Optional[Dict[int, float]],
+    use_height_fallback: bool,
+) -> List[int]:
+    """从已有 HeadingNode 检测 doc_title 候选索引。
+
+    高度检测（OCR ratio≥1.8 / edited 居中+ratio≥1.2）；无候选时取首个无编号
+    L1/L2 + len≥8（窄 fallback）。跨页重复文本（页面家具）排除。
+    """
+    heading_text_counts: "Counter[str]" = Counter(
+        (b.text or "").strip() for b in content if isinstance(b, HeadingNode)
+    )
+    indices: List[int] = []
+    for i, b in enumerate(content):
+        if not isinstance(b, HeadingNode):
+            continue
+        txt = (b.text or "").strip()
+        if style_of(txt) is not None or RE_APPENDIX.match(txt):
+            continue
+        if heading_text_counts[txt] > 1:
+            continue
+        h = _bbox_h(b)
+        ratio = (h / body_h) if body_h else 0.0
+        centered = _is_centered(b, page_widths)
+        if (use_height_fallback and ratio >= DOC_TITLE_RATIO) or (
+            not use_height_fallback and centered and ratio >= DOC_TITLE_EDITED_RATIO
+        ):
+            indices.append(i)
+    if not indices:
+        for i, b in enumerate(content):
+            if not isinstance(b, HeadingNode):
+                continue
+            txt = (b.text or "").strip()
+            if RE_APPENDIX.match(txt) or style_of(txt) is not None:
+                continue
+            if heading_text_counts[txt] > 1:
+                continue
+            if b.level <= 2 and len(txt) >= 8:
+                indices.append(i)
+                break
+    return indices
+
+
 def _clean_toc_text(text: str) -> str:
     """清理 TOC 条目文本：去点线引导符 + 尾部页码（迁自 toc_analysis）。"""
     parts = re.split(r"\.{2,}|…+|·{2,}", text or "")
@@ -577,59 +622,32 @@ def calibrate_levels(
     para_hs = [h for h in para_hs if h > 0]
     body_h = statistics.mode(para_hs) if para_hs else 0.0
 
-    # 0b. doc_title 提升（R2）
-    content = _promote_doc_title_paragraphs(
-        content, body_h, page_widths=page_widths, use_height_fallback=use_height_fallback
-    )
-
-    # 0c. toc 映射
+    # 0b. doc_title 检测（已有 HeadingNode）
     toc_map = _build_toc_mapping(toc_entries)
-
-    # 1. 检测大标题。真标题在全文唯一；版头机关名/时间戳等页面家具跨页重复 →
-    # 用 heading 文本出现次数过滤掉重复项，避免把版头当标题。
-    heading_text_counts: "Counter[str]" = Counter(
-        (b.text or "").strip() for b in content if isinstance(b, HeadingNode)
+    doc_title_indices = _detect_doc_title_indices(
+        content, body_h, page_widths, use_height_fallback
     )
-    doc_title_indices: List[int] = []
-    for i, b in enumerate(content):
-        if not isinstance(b, HeadingNode):
-            continue
-        txt = (b.text or "").strip()
-        if style_of(txt) is not None or RE_APPENDIX.match(txt):
-            continue
-        if heading_text_counts[txt] > 1:
-            continue  # 跨页重复 = 页面家具，非文档标题
-        h = _bbox_h(b)
-        ratio = (h / body_h) if body_h else 0.0
-        centered = _is_centered(b, page_widths)
-        if (use_height_fallback and ratio >= DOC_TITLE_RATIO) or (
-            not use_height_fallback and centered and ratio >= DOC_TITLE_EDITED_RATIO
-        ):
-            doc_title_indices.append(i)
-            _log_add(section="calibrate", block_id=b.id, text=txt[:40],
-                     detected="doc_title", action="→候选",
-                     reason=f"ratio={ratio:.1f} centered={centered} L{b.level}")
+    for i in doc_title_indices:
+        b = content[i]
+        _log_add(section="calibrate", block_id=b.id, text=(b.text or "")[:40],
+                 detected="doc_title", action="→候选", reason="heading 检测")
+
+    # 0c. OCR 兜底（R2）：若没有任何 heading 级 doc_title，才提升 ParagraphNode 再检测。
+    # 仅 OCR 服务未把标题标成 `#`（留作段落）时触发；避免标题已是 HeadingNode 时
+    # 把多行正文段落（bbox 高、ratio≥1.8）误提升为竞争性 doc_title。
+    if not doc_title_indices and use_height_fallback:
+        content = _promote_doc_title_paragraphs(
+            content, body_h, page_widths=page_widths, use_height_fallback=True
+        )
+        doc_title_indices = _detect_doc_title_indices(
+            content, body_h, page_widths, use_height_fallback
+        )
+        for i in doc_title_indices:
+            b = content[i]
+            _log_add(section="calibrate", block_id=b.id, text=(b.text or "")[:40],
+                     detected="doc_title(promoted)", action="→候选", reason="R2 段落提升")
 
     has_doc_title = len(doc_title_indices) > 0
-
-    # Fallback：无高度候选时，取首个无编号 L1/L2 + len≥8（窄，避免误降章节标题）
-    if not has_doc_title:
-        for i, b in enumerate(content):
-            if not isinstance(b, HeadingNode):
-                continue
-            txt = (b.text or "").strip()
-            if RE_APPENDIX.match(txt) or style_of(txt) is not None:
-                continue
-            if heading_text_counts[txt] > 1:
-                continue
-            if b.level <= 2 and len(txt) >= 8:
-                doc_title_indices.append(i)
-                has_doc_title = True
-                _log_add(section="calibrate", block_id=b.id, text=txt[:40],
-                         detected="doc_title(fallback)", action="→候选",
-                         reason=f"首个无编号H{b.level}(长度{len(txt)})")
-                break
-
     doc_title_set: set = set(doc_title_indices)
     level_offset = 1 if has_doc_title else 0
 
