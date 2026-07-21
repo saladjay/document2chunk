@@ -16,6 +16,7 @@ heading / title 同行（y 差 ≤ 5pt）且同级时也合并。
 
 from __future__ import annotations
 
+import re
 from collections import Counter
 
 from document2chunk.pipeline.base import PipelineContext
@@ -24,6 +25,9 @@ from document2chunk.pipeline.base import PipelineContext
 _PARAGRAPH_BREAK_SPACING_RATIO = 1.5
 # 间距聚类步长（pt）——消除浮点噪声后取众数
 _SPACING_BUCKET = 0.1
+# 列表/编号标记开头（新段落/列表项，不与上一段合并）：1./2、/3) 、（一）、一、
+# (?!\d) 排除小数（1.5亿元）
+_LIST_MARKER_RE = re.compile(r"^(?:\d+[.、)](?!\d)|[（(][一二三四五六七八九十]+[）)]|[一二三四五六七八九十]+、)")
 
 
 class MergeStage:
@@ -117,6 +121,12 @@ class MergeStage:
         # ClassificationStage 已用多信号判定 heading/paragraph
         # 只保护 heading/title 不被合并；paragraph（即使编号开头）允许合并
         if elem1.get("type") in ("heading", "title") or elem2.get("type") in ("heading", "title"):
+            return False
+
+        # R10：elem2 以列表/编号标记开头 → 新段落/列表项，不合并。
+        # 用 (?!\d) 排除小数（1.5亿元）；「（一）+body」的 body 不以标记开头，仍可合并。
+        t2 = (elem2.get("text") or "").strip()
+        if _LIST_MARKER_RE.match(t2):
             return False
 
         # 层级必须相同

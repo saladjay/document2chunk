@@ -25,6 +25,7 @@ from collections import Counter, defaultdict
 from typing import Any, Dict, List, Optional, Tuple
 
 from document2chunk.ir import BlockNode, DocumentMetadata, HeadingNode, ParagraphNode, TocEntry
+from document2chunk.pipeline.stages.merge import _LIST_MARKER_RE
 
 # ── 编号正则 ──
 _NUM = r"[一二三四五六七八九十百千零〇两]+"
@@ -392,6 +393,10 @@ def _is_cross_page_continuation(b1: ParagraphNode, b2: ParagraphNode) -> bool:
         return False
     t = (b1.text or "").rstrip()
     if t and t[-1] in _SENTENCE_END_JOIN:
+        return False
+    # R10：b2 以列表/编号标记开头 → 新段落/列表项，不 join
+    t2 = (b2.text or "").strip()
+    if _LIST_MARKER_RE.match(t2):
         return False
     return True
 
