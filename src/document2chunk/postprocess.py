@@ -33,7 +33,7 @@ RE_SECTION = re.compile(rf"^第{_NUM}节")
 RE_ARTICLE = re.compile(rf"^第{_NUM}条")
 RE_CN_MAJOR = re.compile(rf"^{_NUM}、")
 RE_CN_MINOR = re.compile(rf"^[（(]{_NUM}[）)]")
-RE_DIGIT = re.compile(r"^(\d+[.、]|[（(]\d+[）)])")
+RE_DIGIT = re.compile(r"^(\d+[.．、]|[（(]\d+[）)])")  # 含全角句点 ．（与 heading_scorer 对齐）
 RE_APPENDIX = re.compile(r"^(附\s*[表录件]|附\s*录|appendix)", re.IGNORECASE)
 
 # 偏序（值小 = 高层级；非绝对 level，由栈序覆盖）
@@ -248,8 +248,13 @@ def filter_noise(
         if pg is None or not bb or len(bb) < 4:
             continue
         max_y = page_max_y.get(pg, 0)
-        if max_y <= 0 or bb[3] < max_y * _PAGE_NUM_BAND:
-            continue  # 不在底部带
+        if max_y <= 0:
+            continue
+        # 页码位置：底部带（≥70%）或顶部带（<8%，HTML 版 PDF 常把页码放顶部）
+        in_bottom = bb[3] >= max_y * _PAGE_NUM_BAND
+        in_top = bb[1] < max_y * _HEADER_FOOTER_BAND[0]
+        if not (in_bottom or in_top):
+            continue
         text = (getattr(b, "text", "") or "").strip()
         if not _PAGE_NUM_RE.match(text):
             continue
@@ -301,6 +306,26 @@ def filter_noise(
             for bid in confirmed:
                 _log_add(section="filter_noise", block_id=bid, action="removed",
                          reason="page_number:sequence")
+
+        # 极端底部单一页码兜底（无跨页序列时）：y1 ≥ max_y*0.95 + 窄（< 页宽 12%）
+        # + 已过页码正则 → 页码。仅命中页脚边缘的页码格式文本，不盲删整个底带（避免 R9）。
+        geo_w = {pg: w for pg, (w, _h) in page_geometry.items()}
+        block_by_id = {b.id: b for b in content}
+        for pg, bid, num in candidates:
+            if bid in confirmed:
+                continue
+            blk = block_by_id.get(bid)
+            bb = _prov_bbox(blk) if blk else None
+            if not bb or len(bb) < 4:
+                continue
+            max_y = page_max_y.get(pg, 0)
+            pw = geo_w.get(pg, 0)
+            if max_y <= 0 or pw <= 0:
+                continue
+            if bb[3] >= max_y * 0.95 and (bb[2] - bb[0]) < pw * 0.12:
+                confirmed.add(bid)
+                _log_add(section="filter_noise", block_id=bid, action="removed",
+                         reason="page_number:extreme_bottom")
 
     noise_ids |= confirmed
     return [b for b in content if b.id not in noise_ids]
@@ -413,12 +438,15 @@ def _promote_doc_title_paragraphs(
     page_widths: Optional[Dict[int, float]],
     use_height_fallback: bool,
 ) -> List[BlockNode]:
-    """doc_title 提升（修 R2）：高比例 + 居中 + 无编号的 ParagraphNode → HeadingNode。
+    """doc_title 提升（修 R2）：仅 OCR（use_height_fallback=True）。
 
-    OCR 无上游 ClassificationStage，这是其文档大标题检测的唯一入口；
-    对 PDF 是 Classification 漏检的安全网（已是 HeadingNode 则不动）。
+    OCR 无上游 ClassificationStage，文档大标题常被服务标成 text → ParagraphNode，
+    此处按高度比 ≥ DOC_TITLE_RATIO 提升。**edited-PDF 不走此路径**——ClassificationStage
+    已用 font 信号判定标题，pre-scan 会把多个居中段落都误提升（实测在 HTML 版 PDF 上
+    把正文段落误当大标题）。edited 的 doc_title 由 calibrate_levels 在已有 HeadingNode
+    中检测（居中 + 高度比）。
     """
-    if body_h <= 0:
+    if body_h <= 0 or not use_height_fallback:
         return content
     out: List[BlockNode] = []
     for b in content:
@@ -427,11 +455,7 @@ def _promote_doc_title_paragraphs(
             if txt and not style_of(txt) and not RE_APPENDIX.match(txt):
                 h = _bbox_h(b)
                 ratio = h / body_h if body_h else 0.0
-                is_doc = (
-                    (use_height_fallback and ratio >= DOC_TITLE_RATIO)
-                    or (not use_height_fallback and _is_centered(b, page_widths) and ratio >= DOC_TITLE_EDITED_RATIO)
-                )
-                if is_doc:
+                if ratio >= DOC_TITLE_RATIO:
                     out.append(HeadingNode(
                         id=b.id, level=1, text=txt,
                         runs=getattr(b, "runs", []),

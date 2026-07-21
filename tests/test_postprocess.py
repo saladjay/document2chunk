@@ -288,6 +288,19 @@ def test_filter_noise_table_bottom_number_not_removed():
     assert sum("合计金额" in t for t in texts) == 3
 
 
+def test_filter_noise_single_extreme_bottom_page_number():
+    """R4 兜底：单一极端底部窄页码（无跨页序列，如 HTML 版 PDF 只标 1/3）→ 移除。"""
+    body = "正文段落内容填充文字略长一些以撑起页面高度。"
+    content = [
+        P(body, page=0, bbox=(0, 100, 500, 820)),
+        P("1/3", page=0, bbox=(558, 819, 570, 828)),  # 极端底部 + 窄（width 12 < 595*0.12）
+    ]
+    out = filter_noise(content, page_geometry={0: (595, 842)})
+    texts = [b.text for b in out if isinstance(b, ParagraphNode)]
+    assert "1/3" not in texts
+    assert body in texts
+
+
 # ══════════════════════════════════════
 #  split_attachments
 # ══════════════════════════════════════
