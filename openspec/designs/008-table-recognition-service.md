@@ -176,6 +176,58 @@ DOCUMENT2CHUNK_TABLE_FMT=html,json
 - 是否把 `enhance_tables` 做成 `parse()` 的默认（表格密集文档自动升级）——看精度与延迟权衡。
 - 单模块端点（classification/structure/cells）是否暴露给 debug 可视化（叠加 cell box）。
 
+## 14. 几何重建（`cell_box_list`）——复杂合并表头的补救
+
+**动机**：服务返回的 `html` 在**超复杂多级合并表头**上拓扑错乱——colspan 落在空格、
+文字塞进 1 宽格、列数算错（实测「永久基本农田划定情况表」21 列被算成 20）。但 `html`
+的**每格文字本身是对的**，错的只是拓扑。而 `json.cell_box_list`（单元格检测框）**几何可靠**，
+合并信息藏在尺寸里（高框=rowspan、宽框=colspan）。
+
+**方案**：`_geo_reconstruct.py` 用几何还原真实网格拓扑，文字从 html 按行对齐；不可靠时
+`try_geo_to_table_node` 返回 `None`，extractor 透明回退 `html_to_table_node`。
+
+**算法 6 步**：
+1. **自适应边聚类** `cluster_edges`（贪心 + 滑动均值；`tol = max(8, 0.18×median(box 维度))`）。
+2. **幻影带修复** `_repair_phantom_bands`：迭代合并间距 `< max(10, 0.45×median 带间距)` 的
+   相邻带（同一线的检测抖动）——比固定 tol 稳，tol 略小导致同线被拆成两簇时合回。
+3. **框→span** `_snap_to_band`（bisect 最近带线）→ 每个 box 得 `(r0,c0,rowspan,colspan)`。
+4. **覆盖校验** `validate_grid`：`holes`/`overlaps` 超 `max(2, 5%×R×C)` 判失败（留余量，真实检测不完美）。
+5. **文字行对齐** `align_texts`：html 行 ↔ geo 行（按 `r0` 分组），行内非空 html 文字 zip 到
+   geo 格（`c0` 序）。尊重模型的行结构（行边界大致可信），跳过行内空格/空数据行。
+6. **构造 TableNode**：cell bbox 挂**内层** `ParagraphNode.provenance.bbox`（`TableCellNode` 无
+   provenance 字段）；`TableNode.provenance.bbox` 默认取所有 box 并集。
+
+**5 个回退条件**（`try_geo_to_table_node` 返回 None）：① `cell_boxes` 缺失/<2；② 网格退化；
+③ 覆盖校验不过；④ 文字数 > 格数；⑤ 任何异常。**关键**：校验全过后才 build（消耗 `idc`），
+故与 html 回退共用同一 `_Idc` 时 ID 不断号。回退**逐表**独立。
+
+**`table_reconstruct` 模式**（extractor option，默认 `auto`）：
+- `auto`：有 `cell_box_list` 就试 geo，失败回退 html。
+- `geo`：强求几何（仍带静默回退）。
+- `html`：逃生口，直走 html（跳过 geo）。
+
+**表头判定** `_decide_header`：`header_rows` 显式覆盖优先（表单表建议传，如 5）；其次首行；
+其次「整行全合并」自动。
+
+**实测**（`自然资规2019-1号`）：
+- p19「永久基本农田划定情况表」：geo 重建 **8 行 × 21 列**（html 算成 20 列），左列通栏
+  rowspan、表头 colspan、通栏注释全部正确归位；r3 13 个叶子列名、r4 栏1–栏9、r6 注释文字
+  全部正确。相较原 html 质变。
+- p20：geo 检测到 40 处覆盖重叠 → 判自身不可靠 → 回退 html（优雅降级）。
+- p30：geo 成功（11×9）。
+
+**已知限制**（v1）：
+- **文字归属在「合并格与其宽表头共享起始行」时会错位**：当 rowspan 格（如左列通栏）与
+  宽 colspan 表头同处一行（r0 相同），行内 zip 可能把表头文字塞进 rowspan 格。根因：html
+  文字**无 box**、且其 span 已与服务拓扑脱钩，没有信号把文字钉到「宽格」而非旁边的「高格」。
+  只有带 box 的 OCR（`dt_polys`）才能根治。网格拓扑与 span 仍正确；典型表 95%+ 文字落位正确。
+- **容差需多 PDF 调参**：`_TOL_FRAC=0.18`、`_PHANTOM_FRAC=0.45` 仅在一张表验证；已参数化
+  `row_tol`/`col_tol`，待更多 PDF 到位后扫参。
+- `rec_scores` 占位未启用（无 box、不对齐单元格，字符串匹配太脆）。
+
+**模块**：`_geo_reconstruct.py`（`geo_to_table_node` 硬失败 / `try_geo_to_table_node` 守护）；
+导出于 `extractors/table/__init__.py`；测试 `tests/test_table_geo_reconstruct.py`（26 例 + 真机快照）。
+
 ---
 
 *参考：`表格识别API调用文档.md`（端点 1-4、响应字段、有线/无线分支、运维/回滚）、`表格识别API使用文档.md`（轻量指南）。*

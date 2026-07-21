@@ -12,6 +12,7 @@ from typing import Any, Optional, Union
 
 from document2chunk.extractors.table._client import TableServiceClient
 from document2chunk.extractors.table._config import TableConfig
+from document2chunk.extractors.table._geo_reconstruct import try_geo_to_table_node
 from document2chunk.extractors.table._html_parser import _Idc, html_to_table_node
 from document2chunk.ir import (
     BlockNode,
@@ -53,20 +54,37 @@ class TableExtractor:
         tables = result.get("tables") or []
         idc = _Idc()
         blocks: list[BlockNode] = []
+        mode = opts.get("table_reconstruct", "auto")  # auto | geo | html
         for t in tables:
             page = t.get("page", 0)
             html = t.get("html", "")
             j = t.get("json") or {}
             cell_boxes = j.get("cell_box_list")
-            blocks.append(
-                html_to_table_node(
+            rec_texts = j.get("rec_texts")
+            rec_scores = j.get("rec_scores")
+
+            node: Optional[BlockNode] = None
+            # 几何重建优先：用 cell_box_list 还原真实网格拓扑（复杂合并表头 html 不可信）。
+            # 失败（退化/覆盖不过/文字失配）自动回退 html。逐表独立决策。
+            if mode in ("auto", "geo") and cell_boxes:
+                node = try_geo_to_table_node(
+                    cell_boxes,
+                    html=html,
+                    page_index=page,
+                    source_type=source_type,
+                    idc=idc,
+                    rec_texts=rec_texts,
+                    rec_scores=rec_scores,
+                )
+            if node is None:  # geo 失败 或 mode=="html"
+                node = html_to_table_node(
                     html,
                     page_index=page,
                     source_type=source_type,
                     cell_boxes=cell_boxes,
                     idc=idc,
                 )
-            )
+            blocks.append(node)
 
         pages = sorted({t.get("page", 0) for t in tables})
         metadata = DocumentMetadata(
@@ -94,7 +112,7 @@ def _normalize_options(options: Any) -> dict:
     if isinstance(options, dict):
         return options
     out: dict = {}
-    for k in ("table_fmt", "page_range"):
+    for k in ("table_fmt", "page_range", "table_reconstruct"):
         v = getattr(options, k, None)
         if v is not None:
             out[k] = v

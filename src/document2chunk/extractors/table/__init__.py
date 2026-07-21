@@ -7,6 +7,10 @@
 from document2chunk.extractors.table._client import TableServiceClient
 from document2chunk.extractors.table._config import TableConfig
 from document2chunk.extractors.table._exceptions import TableServiceError
+from document2chunk.extractors.table._geo_reconstruct import (
+    geo_to_table_node,
+    try_geo_to_table_node,
+)
 from document2chunk.extractors.table._html_parser import html_to_table_node
 from document2chunk.extractors.table.extractor import TableExtractor
 
@@ -16,4 +20,6 @@ __all__ = [
     "TableConfig",
     "TableServiceError",
     "html_to_table_node",
+    "geo_to_table_node",
+    "try_geo_to_table_node",
 ]
