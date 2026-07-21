@@ -1,82 +1,41 @@
-"""预定义的 Pipeline 组合。
+"""预定义 Pipeline 组合（designs/009 全文档架构）。
 
-仅保留 ``default_pipeline``（线性）与 ``split_pipeline``（生产入口，目录页/正文页分流）。
-丢弃旧 ``full_pipeline``/``simple_pipeline``（未用预设，designs/002 §3）。
+PDF 前端只做「提取 + 标题类型判定（font 信号）+ 页内合并」，5 个 stage 的线性 Pipeline：
+``BodyAnalysis → ImageDetection → Classification → TOCDetection → MergeStage``。
+跨页合并 / 噪声过滤 / 标题定级 / 附件拆分等文档级决策全部上移到
+:mod:`document2chunk.postprocess`（两路共用，在 BlockNode 层执行）。
 """
 
 from __future__ import annotations
 
-from document2chunk.pipeline.base import Pipeline, SplitPipeline, SplitStages
+from document2chunk.pipeline.base import Pipeline
 from document2chunk.pipeline.stages import (
-    AutoLevelStage,
     BodyAnalysisStage,
     ClassificationStage,
     ImageDetectionStage,
-    LayoutFilterStage,
     MergeStage,
-    PageNumberDetectionStage,
-    TOCAnalysisStage,
     TOCDetectionStage,
 )
 
 
-def default_pipeline(
+def pdf_pipeline(
     layout_jsonl: str | None = None,
     *,
     debug_dir: str | None = None,
 ) -> Pipeline:
-    """标准线性流水线（版面过滤 + 目录识别/分析 + 自动层级 + 页码检测）。
+    """PDF 前端线性管线（5 stage）。
 
-    注意：生产入口是 :func:`split_pipeline`（目录页/正文页分流）；
-    ``default_pipeline`` 与 ``SplitPipeline`` 的 LayoutFilter 位置、TOCAnalysis
-    作用域都不同（designs/003 §2.5）。
+    Args:
+        layout_jsonl: 版面分析 JSONL（image_detection 用于图分类）。
+        debug_dir: 管线调试目录（每 stage 写 {NN}_{name}.json）。
     """
     return Pipeline(
         [
             BodyAnalysisStage(),
             ImageDetectionStage(),
             ClassificationStage(),
-            LayoutFilterStage(
-                layout_jsonl=layout_jsonl,
-                enable_heuristic_header_footer=True,
-            ),
             TOCDetectionStage(),
-            TOCAnalysisStage(),
             MergeStage(),
-            AutoLevelStage(),
-            PageNumberDetectionStage(),
         ],
-        debug_dir=debug_dir,
-    )
-
-
-def default_split_stages(
-    layout_jsonl: str | None = None,
-) -> SplitStages:
-    """装配默认的 9 个 Stage 实例（SplitPipeline 构造注入用）。"""
-    return SplitStages(
-        body_analysis=BodyAnalysisStage(),
-        image_detection=ImageDetectionStage(),
-        classification=ClassificationStage(),
-        toc_detection=TOCDetectionStage(),
-        layout_filter=LayoutFilterStage(
-            layout_jsonl=layout_jsonl,
-            enable_heuristic_header_footer=True,
-        ),
-        toc_analysis=TOCAnalysisStage(),
-        merge=MergeStage(),
-        auto_level=AutoLevelStage(),
-        page_number_detection=PageNumberDetectionStage(),
-    )
-
-
-def split_pipeline(
-    layout_jsonl: str | None = None,
-    *,
-    debug_dir: str | None = None,
-) -> SplitPipeline:
-    """分流流水线（生产入口）：目录页走轻量管线，正文页走完整管线。"""
-    return SplitPipeline(
-        stages=default_split_stages(layout_jsonl),
         debug_dir=debug_dir,
     )

@@ -8,9 +8,9 @@
 - :class:`PyMuPDFSpanExtractor`：PDF → 行级 element + 表格（pdfplumber 优先、
   PyMuPDF 兜底双引擎）+ 图片信息。``_bbox_overlap``/``_sort_key``/``_clean_cell``
   已提到模块级（消除原 parser_pymupdf 的内嵌闭包反模式）。
-- :class:`PdfExtractor`：编排 span 提取 → :class:`SplitPipeline` → element→BlockNode
-  映射 → :class:`ExtractionResult`。``extract`` 不产出完整 LogicalDocument、不调
-  structure-builder（INTEGRATION §2）。
+- :class:`PdfExtractor`：编排 span 提取 → 线性 :class:`Pipeline`（5 stage）→
+  element→BlockNode 映射 → 全文档 postprocess → :class:`ExtractionResult`。
+  ``extract`` 不产出完整 LogicalDocument、不调 structure-builder（INTEGRATION §2）。
 - :func:`detect_pdf_type`：可编辑性检测（scanned/mixed → 路由到 ocr-extractor）。
 """
 
@@ -35,11 +35,9 @@ from document2chunk.ir import (
 )
 from document2chunk.pipeline import (
     PipelineContext,
-    SplitPipeline,
-    SplitStages,
-    default_split_stages,
+    Pipeline,
     load_layout_data,
-    split_pipeline,
+    pdf_pipeline,
 )
 from document2chunk.pipeline.config import IMAGE_FORMAT, IMAGE_MIN_AREA
 from document2chunk.pipeline.stages.layout_filter import layout_boxes_for_page
@@ -557,8 +555,9 @@ class PyMuPDFSpanExtractor:
 class PdfExtractor:
     """可编辑 PDF → ExtractionResult。
 
-    编排：PyMuPDFSpanExtractor 提取 → SplitPipeline 处理 → element→BlockNode 映射。
-    scanned/mixed PDF 不在本 extractor 范围（fast-fail，路由到 ocr-extractor）。
+    编排：PyMuPDFSpanExtractor 提取 → 线性 Pipeline（5 stage）→ element→BlockNode 映射
+    → 全文档 postprocess（跨页合并/噪声/定级/附件）。scanned/mixed 不在本 extractor
+    范围（fast-fail，路由到 ocr-extractor）。
     """
 
     source_type: SourceType = SourceType.PDF
@@ -566,9 +565,8 @@ class PdfExtractor:
     def __init__(
         self,
         *,
-        pipeline: SplitPipeline | None = None,
+        pipeline: Pipeline | None = None,
         layout_jsonl: str | Path | None = None,
-        split_stages: SplitStages | None = None,
         extract_images: bool = True,
         image_dir: str | Path | None = None,
         debug_dir: str | Path | None = None,
@@ -576,9 +574,8 @@ class PdfExtractor:
     ):
         """
         Args:
-            pipeline: 自定义 SplitPipeline；None 则用 :func:`split_pipeline` 默认。
+            pipeline: 自定义 Pipeline；None 则用 :func:`pdf_pipeline` 默认（5 stage）。
             layout_jsonl: 版面分析 JSONL 路径（PaddleOCR LayoutDetection 输出）。
-            split_stages: 自定义 SplitStages（仅 pipeline 为 None 时生效）。
             extract_images: 是否提取图片信息。
             image_dir: 图片落盘目录（None 不落盘）。
             debug_dir: 管线调试目录（每 stage 写 {NN}_{name}.json）。
@@ -587,10 +584,8 @@ class PdfExtractor:
         if pipeline is not None:
             self._pipeline = pipeline
         else:
-            self._pipeline = SplitPipeline(
-                stages=split_stages or default_split_stages(
-                    str(layout_jsonl) if layout_jsonl else None
-                ),
+            self._pipeline = pdf_pipeline(
+                str(layout_jsonl) if layout_jsonl else None,
                 debug_dir=str(debug_dir) if debug_dir else None,
             )
         self._layout_jsonl = layout_jsonl
@@ -680,23 +675,24 @@ class PdfExtractor:
             custom["body_font"] = body_ctx.body_font
         if body_ctx.body_font_size is not None:
             custom["body_font_size"] = body_ctx.body_font_size
-        if body_ctx.max_heading_level:
-            custom["max_heading_level"] = body_ctx.max_heading_level
 
         metadata = self._metadata(source, page_count=len(raw_pages), custom=custom)
 
-        # 8. 共享后处理（自适应标题定级 + join + 过滤 + 附件拆分，designs/007）
-        from document2chunk.heading import calibrate, join_cross_page_paragraphs
-        from document2chunk.heading import filter_cross_page_noise, split_attachments
-        page_widths = {}
-        for elems, ctx in pages_data:
-            if hasattr(ctx, "page_width") and hasattr(ctx, "page_index"):
-                page_widths[ctx.page_index] = ctx.page_width
+        # 8. 全文档后处理（两路共用：噪声过滤 + 跨页合并 + 标题定级 + 附件拆分，designs/009）
+        from document2chunk.postprocess import postprocess
+        page_geometry = {}
+        for _elems, ctx in pages_data:
+            if hasattr(ctx, "page_width") and hasattr(ctx, "page_height") and hasattr(ctx, "page_index"):
+                page_geometry[ctx.page_index] = (ctx.page_width, ctx.page_height)
         pp_log: list = []
-        blocks = calibrate(blocks, metadata, use_height_fallback=False, page_widths=page_widths, _log=pp_log)
-        blocks = join_cross_page_paragraphs(blocks, _log=pp_log)
-        blocks = filter_cross_page_noise(blocks, _log=pp_log)
-        main_content, attach_segments = split_attachments(blocks, _log=pp_log)
+        main_content, attach_segments = postprocess(
+            blocks, metadata,
+            toc_entries=toc_entries,
+            page_geometry=page_geometry,
+            layout_data=layout_data,
+            use_height_fallback=False,  # edited-PDF：居中 + 高度比（DOC_TITLE_EDITED_RATIO）
+            _log=pp_log,
+        )
         if self._debug_dir:
             import json as _json, os as _os
             _os.makedirs(str(self._debug_dir), exist_ok=True)

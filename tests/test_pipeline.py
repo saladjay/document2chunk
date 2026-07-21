@@ -1,4 +1,7 @@
-"""pipeline 引擎测试（聚焦 designs/003 §9 的四个修复）。
+"""pipeline 引擎测试（designs/009 全文档架构）。
+
+覆盖线性 Pipeline 引擎（_group_stages / _redistribute / _DebugTracer）+
+pdf_pipeline 5-stage 装配 + MergeStage 行间距防过度合并。
 
 运行：
     PYTHONPATH=src python tests/test_pipeline.py
@@ -12,19 +15,13 @@ import tempfile
 from document2chunk.pipeline import (
     Pipeline,
     PipelineContext,
-    SplitPipeline,
-    SplitStages,
-    default_split_stages,
+    pdf_pipeline,
 )
 from document2chunk.pipeline.stages import (
-    AutoLevelStage,
     BodyAnalysisStage,
     ClassificationStage,
     ImageDetectionStage,
-    LayoutFilterStage,
     MergeStage,
-    PageNumberDetectionStage,
-    TOCAnalysisStage,
     TOCDetectionStage,
 )
 
@@ -33,7 +30,7 @@ from document2chunk.pipeline.stages import (
 
 
 class _RecordStage:
-    """记录 process 调用的最小 Stage（用于分组/注入测试）。"""
+    """记录 process 调用的最小 Stage（用于分组测试）。"""
 
     def __init__(self, name, is_global=False):
         self._name = name
@@ -95,78 +92,40 @@ def test_redistribute_uses_page_index():
     assert [e["text"] for e in result[0]] == ["a"], result[0]
     assert [e["text"] for e in result[1]] == ["d"], result[1]
     assert [e["text"] for e in result[2]] == ["b", "c"], result[2]
-    # 旧实现读 _page_index（不存在）→ 全部归 page 0；这里验证不会如此
     assert result[0] != elems, "regression: all fell to page 0"
     print("OK test_redistribute_uses_page_index")
 
 
-# ---------- 3. _DebugTracer 共享计数器 ----------
+# ---------- 3. pdf_pipeline 线性装配 + 端到端跑通 ----------
 
 
-def test_split_pipeline_shared_debug_counter():
-    """SplitPipeline 多个子管线共享一个 tracer → {NN}_{name}.json 连续编号。"""
-    from document2chunk.extractors._mapping import _IdGen  # noqa: F401  (确保 mapping 可 import)
-
+def test_pdf_pipeline_linear():
+    """pdf_pipeline 装配 5 个 stage 的线性 Pipeline；跑两页简单元素产出 heading + paragraph。"""
     pages = _two_simple_pages()
     dbg = tempfile.mkdtemp()
-    sp = SplitPipeline(stages=default_split_stages(), debug_dir=dbg)
-    sp.run(pages)
-
+    pipe = pdf_pipeline(debug_dir=dbg)
+    out = pipe.run(pages)
+    assert len(out) == 2
+    # 中间结果 {NN}_{name}.json 连续编号
     files = sorted(os.listdir(dbg))
-    # 至少有 body_analysis / classification / merge / auto_level 等
-    names = [f[3:].removesuffix(".json") for f in files]  # 去 "NN_" 前缀
+    names = [f[3:].removesuffix(".json") for f in files]
     assert "body_analysis" in names, names
     assert "classification" in names, names
-    # 编号连续 01..N
+    assert "merge" in names, names
     nums = [int(f[:2]) for f in files]
     assert nums == list(range(1, len(files) + 1)), nums
-    print(f"OK test_split_pipeline_shared_debug_counter ({len(files)} files: {names})")
-
-
-# ---------- 4. SplitStages 构造注入（DIP）----------
-
-
-def test_split_stages_injection():
-    """SplitPipeline 通过构造注入 SplitStages，不再延迟 import 具体 Stage。"""
-    stages = SplitStages(
-        body_analysis=BodyAnalysisStage(),
-        image_detection=ImageDetectionStage(),
-        classification=ClassificationStage(),
-        toc_detection=TOCDetectionStage(),
-        layout_filter=LayoutFilterStage(enable_heuristic_header_footer=False),
-        toc_analysis=TOCAnalysisStage(),
-        merge=MergeStage(),
-        auto_level=AutoLevelStage(),
-        page_number_detection=PageNumberDetectionStage(),
-    )
-    sp = SplitPipeline(stages=stages)
-    # stage_names 不依赖延迟 import
-    assert "body_analysis" in sp.stage_names
-    pages = _two_simple_pages()
-    out = sp.run(pages)
-    assert len(out) == 2
-    # 注入的 LayoutFilter 关闭了启发式 → 顶部标题不被误删
+    # 产出含 heading 与 paragraph
     flat = [e for page in out for e in page]
     assert any(e.get("type") in ("title", "heading") for e in flat), flat
-    print("OK test_split_stages_injection")
-
-
-# ---------- 5. saved_body 删除后 body 基准仍正确 ----------
-
-
-def test_body_baseline_preserved_without_saved_body():
-    """删 saved_body 后：SplitPipeline 全程 body_font/size 与单跑 BodyAnalysis 一致。"""
-    pages = _two_simple_pages()
-    sp = SplitPipeline(stages=default_split_stages())
-    out = sp.run(pages)
-    assert len(out) == 2
-    for elems, ctx in pages:
+    assert any(e.get("type") == "paragraph" for e in flat), flat
+    # body 基准跨页一致
+    for _elems, ctx in pages:
         assert ctx.body_font == "Helvetica", ctx.body_font
         assert ctx.body_font_size == 12.0, ctx.body_font_size
-    # 处理后仍含正文
-    flat = [e for page in out for e in page]
-    assert any(e.get("type") == "paragraph" for e in flat)
-    print("OK test_body_baseline_preserved_without_saved_body")
+    print(f"OK test_pdf_pipeline_linear ({len(files)} stage dumps)")
+
+
+# ---------- 4. SplitStages / saved_body 已随 SplitPipeline 移除（designs/009）----------
 
 
 # ---------- 夹具 ----------
@@ -207,9 +166,7 @@ def _elem(text, size, bbox, bold_flags=False):
 
 
 def test_merge_spacing_prevents_overmerge():
-    """间距 > 标准行间距 × 1.8 → 分段；小间距 → 合并。"""
-    from document2chunk.pipeline.stages.merge import MergeStage
-
+    """间距 > 标准行间距 × 阈值 → 分段；小间距 → 合并。"""
     def p(text, y0, y1):
         return {
             "type": "paragraph", "level": None, "text": text, "markdown": text,
@@ -219,18 +176,15 @@ def test_merge_spacing_prevents_overmerge():
 
     ctx = PipelineContext(page_width=595, page_height=842)
 
-    # 3 行（间距 2pt）→ 1 段；断（间距 10pt）；2 行（间距 2pt）→ 1 段
     elems = [p("a", 0, 10), p("b", 12, 22), p("c", 24, 34),
              p("d", 44, 54), p("e", 56, 66), p("f", 68, 78)]
     assert MergeStage._compute_standard_spacing(elems) == 2.0
     out = MergeStage().process(elems, ctx)
-    assert len(out) == 2, [o["text"] for o in out]  # 不会全并成 1 段
+    assert len(out) == 2, [o["text"] for o in out]
     assert out[0]["text"] == "abc" and out[1]["text"] == "def"
 
-    # 全小间距 → 合成 1 段
     assert len(MergeStage().process([p("a", 0, 10), p("b", 12, 22)], ctx)) == 1
 
-    # low_confidence 传播仍有效
     e = [p("a", 0, 10), {**p("b", 12, 22), "low_confidence": True}]
     assert MergeStage().process(e, ctx)[0].get("low_confidence") is True
     print("OK test_merge_spacing_prevents_overmerge")
@@ -242,9 +196,7 @@ def test_merge_spacing_prevents_overmerge():
 def main():
     test_group_stages()
     test_redistribute_uses_page_index()
-    test_split_pipeline_shared_debug_counter()
-    test_split_stages_injection()
-    test_body_baseline_preserved_without_saved_body()
+    test_pdf_pipeline_linear()
     test_merge_spacing_prevents_overmerge()
     print("\nALL PIPELINE TESTS PASSED")
 
