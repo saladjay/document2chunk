@@ -460,3 +460,103 @@ def try_geo_to_table_node(
         )
     except Exception:  # 防御：geo 永不阻断流水线
         return None
+
+
+# ============================================================
+# geo_ocr：几何网格 + 每格 box-bearing OCR 文字（根治合并表头文字错位）
+# ============================================================
+
+
+def geo_ocr_to_table_node(
+    cell_boxes: list[list[float]],
+    image,
+    *,
+    ocr=None,
+    page_index: Optional[int] = None,
+    source_type: SourceType = SourceType.OCR,
+    table_bbox: Optional[list[float]] = None,
+    idc: Optional[_Idc] = None,
+    header_first_row: bool = True,
+    header_rows: Optional[int] = None,
+    row_tol: Optional[float] = None,
+    col_tol: Optional[float] = None,
+) -> TableNode:
+    """几何网格 + **每格 box-bearing OCR 文字** → ``TableNode``（硬失败抛 ``ValueError``）。
+
+    与 :func:`geo_to_table_node` 的区别：文字不来自（错乱的）html，而对 ``image`` 本地
+    OCR、按 poly 中心落点钉到格——根治合并表头文字错位（如 r0 宽表头）。
+
+    前置：``cell_boxes`` 必须与 ``image`` **同像素空间**（由 extractor 的 ``geo_ocr``
+    模式：渲染页 → 把该图送服务取得校准框）。
+
+    Args:
+        cell_boxes: 与 image 同空间的单元格框。
+        image: 页图（路径 / PIL / ndarray）——传给 ``ocr.predict``。
+        ocr: paddleocr 引擎（缺省 lazy 创建）。可注入 stub 单测。
+    """
+    from document2chunk.extractors.table._cell_ocr import ocr_cell_texts
+
+    if not cell_boxes or len(cell_boxes) < 2:
+        raise ValueError("cell_boxes 过少（<2），无法重建网格")
+    idc = idc or _Idc()
+
+    grid = boxes_to_grid(cell_boxes, row_tol=row_tol, col_tol=col_tol)
+    ok, reason = validate_grid(grid)
+    if not ok:
+        raise ValueError(f"网格校验失败：{reason}")
+
+    pairs = ocr_cell_texts(cell_boxes, image, ocr=ocr)  # {bi: text}，box-bearing
+    return _build_table_node(
+        grid,
+        {"pairs": pairs},
+        page_index=page_index,
+        source_type=source_type,
+        table_bbox=table_bbox,
+        idc=idc,
+        header_first_row=header_first_row,
+        header_rows=header_rows,
+    )
+
+
+def try_geo_ocr_to_table_node(
+    cell_boxes: Optional[list[list[float]]],
+    image,
+    *,
+    ocr=None,
+    page_index: Optional[int] = None,
+    source_type: SourceType = SourceType.OCR,
+    table_bbox: Optional[list[float]] = None,
+    idc: Optional[_Idc] = None,
+    header_first_row: bool = True,
+    header_rows: Optional[int] = None,
+    row_tol: Optional[float] = None,
+    col_tol: Optional[float] = None,
+) -> Optional[TableNode]:
+    """``geo_ocr`` 的校验守护包装：任一失败（含 OCR/渲染异常）返回 ``None`` 供回退。
+
+    失败条件：① cell_boxes 缺失/<2；② 网格退化；③ 覆盖校验不过；④ OCR 异常；
+    ⑤ 任何异常。失败路径不消耗 ``idc``。
+    """
+    try:
+        from document2chunk.extractors.table._cell_ocr import ocr_cell_texts
+
+        if not cell_boxes or len(cell_boxes) < 2:
+            return None
+        grid = boxes_to_grid(cell_boxes, row_tol=row_tol, col_tol=col_tol)
+        ok, _reason = validate_grid(grid)
+        if not ok:
+            return None
+        pairs = ocr_cell_texts(cell_boxes, image, ocr=ocr)
+        # 全部校验/OCR 通过——此时才 build（消耗 idc）
+        return _build_table_node(
+            grid,
+            {"pairs": pairs},
+            page_index=page_index,
+            source_type=source_type,
+            table_bbox=table_bbox,
+            idc=idc or _Idc(),
+            header_first_row=header_first_row,
+            header_rows=header_rows,
+        )
+    except Exception:  # 防御：geo_ocr 永不阻断流水线（OCR/渲染失败也回退）
+        return None

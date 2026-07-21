@@ -228,6 +228,54 @@ DOCUMENT2CHUNK_TABLE_FMT=html,json
 **模块**：`_geo_reconstruct.py`（`geo_to_table_node` 硬失败 / `try_geo_to_table_node` 守护）；
 导出于 `extractors/table/__init__.py`；测试 `tests/test_table_geo_reconstruct.py`（26 例 + 真机快照）。
 
+## 15. geo_ocr —— box-bearing OCR 文字根治合并表头错位
+
+**动机**：§14 的几何重建修好了**拓扑**，但文字仍来自（错乱的）html、按行 zip 对齐。
+在「rowspan 格与宽 colspan 表头共享起始行」时（如 r0），表头文字会落到旁边的高格上。
+根因：服务 html 文字**无 box**、且其 span 已与拓扑脱钩——没有任何信号把文字钉到「宽格」
+而非旁边的「高格」。
+
+**根治思路**：拿**带 box 的文字**。服务不返回文字框（`rec_texts` 无 box），故**本地 OCR**：
+渲染页图 → 对图 OCR 得 ``(poly, text)`` → 按 poly **中心落点**钉到包含它的 cell box。文字按
+构造属于该格，彻底消除对齐歧义。
+
+**坐标校准（关键）**：服务 PDF 调返回的 ``cell_box_list`` 在**未校准的像素空间**（与服务内
+部渲染分辨率/朝向有关，designs/008 §13 遗留），无法直接 crop。解法——**把渲染页图送回
+服务**：服务在该图上检测，返回的 ``cell_box_list`` 即**与本图同像素空间**（校准）。PDF
+``/Rotate`` 由 fitz 渲染时应用（= 查看器朝向，表格水平）。
+
+**流程**（extractor ``table_reconstruct="geo_ocr"``）：
+- **PDF 源**：① PDF 调服务取各表页码 → ② 逐页 ``render_pdf_page``（fitz, /Rotate 应用）
+  → ③ 该页 PNG 送服务取**校准** ``cell_box_list`` → ④ 本地 paddleocr OCR 该图 →
+  ⑤ ``geo_ocr_to_table_node``（几何网格 + 每格 OCR 文字）。
+- **图片源**：源图即页图，首调框已校准，直接 OCR + geo_ocr。
+- 回退链：``geo_ocr`` 失败（OCR 异常/网格退化）→ ``geo``（校准框 + html 文字）→ ``html``。
+
+**模块**：
+- `_render.py`：``render_pdf_page(bytes,page,dpi)→PIL``（lazy fitz，应用 /Rotate）+ ``image_to_png_bytes``。
+- `_cell_ocr.py`：``ocr_cell_texts(cell_boxes,image,ocr=None)→{bi:text}``，按 poly 中心落点
+  匹配（多 poly 按 ``(y0,x0)`` 阅读序拼接）；PIL→ndarray 喂 paddleocr；``ocr`` 可注入单测。
+- `_geo_reconstruct.py`：``geo_ocr_to_table_node``（硬失败）/ ``try_geo_ocr_to_table_node``（守护）。
+
+**选项**（extractor）：``table_reconstruct="geo_ocr"``；``header_rows``（表单表传，如 5）；
+``page_image_dir``（落盘每页图，对比用——Task1）；``ocr``（注入引擎，测试）；``dpi``（默认 200）。
+
+**依赖**：``geo_ocr`` 额外需 pymupdf（PDF 渲染）+ paddleocr（OCR），均 **lazy import**，仅该
+模式触发；``auto``/``geo``/``html`` 仍只依赖 httpx。
+
+**实测**（`自然资规2019-1号` p19，图片源 geo_ocr）：
+- r0 宽表头格文字正确：``(14, 永久基本农田中耕地情况)``、``(4, 其他地类)``——r0 彻底修复。
+- **找回**之前 html/geo 全丢的列：``名优特新农产品生产基地``、``非可调整非名优特新``。
+- r3 13 个叶子列名（水浇地/旱地/小于15度/…/七至十等）清晰；r4 栏1–栏21；r7 通栏注释。
+- 全 PDF（10 表）geo_ocr 耗时 ~328s（每页 = 渲染 + 图片调服务 + OCR）。
+
+**已知限制**：
+- **慢**：每页一次图片调服务 + 一次全页 OCR；多页 PDF 线性增长。批量/异步为后续优化。
+- **OCR 噪声**：如「1-4等」偶被识成「14等」、「栏14」→「科14」；可调 paddleocr 阈值或后处理。
+- **坐标仍依赖服务**：校准前提是「送图给服务、服务在该图空间返回框」——若服务内部再 resize
+  未映射回，会失准（本实测未出现）。若失准，回退 geo/html。
+- **`header_rows` 仍需调用方传**（表单表多级表头）；自动表头判定只覆盖全合并行。
+
 ---
 
 *参考：`表格识别API调用文档.md`（端点 1-4、响应字段、有线/无线分支、运维/回滚）、`表格识别API使用文档.md`（轻量指南）。*

@@ -4,11 +4,14 @@
 核心是 HTML ``<table> → TableNode``，**保留 colspan/rowspan**（补全现有映射缺的合并）。
 """
 
+from document2chunk.extractors.table._cell_ocr import ocr_cell_texts
 from document2chunk.extractors.table._client import TableServiceClient
 from document2chunk.extractors.table._config import TableConfig
 from document2chunk.extractors.table._exceptions import TableServiceError
 from document2chunk.extractors.table._geo_reconstruct import (
+    geo_ocr_to_table_node,
     geo_to_table_node,
+    try_geo_ocr_to_table_node,
     try_geo_to_table_node,
 )
 from document2chunk.extractors.table._html_parser import html_to_table_node
@@ -22,4 +25,7 @@ __all__ = [
     "html_to_table_node",
     "geo_to_table_node",
     "try_geo_to_table_node",
+    "geo_ocr_to_table_node",
+    "try_geo_ocr_to_table_node",
+    "ocr_cell_texts",
 ]
