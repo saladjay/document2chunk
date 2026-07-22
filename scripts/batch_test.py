@@ -202,7 +202,10 @@ def _compare_with_answer(out_dir: Path, answer_root: Path, rows: list) -> None:
             comp_rows.append({**base, "answer": "missing", "sim": "", "my_h": "", "ans_h": "",
                               "missing_h": "", "extra_h": ""})
             continue
+        # 主文 + 附件文件拼接（附件拆独立文件，答案含全文，拼接后对比才公平）
         my_txt = mine.read_text(encoding="utf-8")
+        for att_file in sorted(mine.parent.glob("output_附件*.md")):
+            my_txt += "\n" + att_file.read_text(encoding="utf-8")
         ans_txt = ans.read_text(encoding="utf-8")
         my_h = [l.strip() for l in my_txt.splitlines() if l.strip().startswith("#")]
         ans_h = [l.strip() for l in ans_txt.splitlines() if l.strip().startswith("#")]
