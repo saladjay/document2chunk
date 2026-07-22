@@ -58,6 +58,12 @@ def block_markdown(block: BlockNode) -> str:
     if isinstance(block, ParagraphNode):
         return _escape_md(block.text)
     if isinstance(block, TableNode):
+        # designs/009：挂了 table_image_id 的表格优先渲染图片（高清截图 + 旋转矫正），
+        # 失败/无图回退 table_markdown。结构数据仍在 IR（JSON/检索可用）。
+        img_id = getattr(block, "table_image_id", None)
+        if img_id:
+            alt = (block.metadata or {}).get("caption") or "表格"
+            return f"![{alt}]({img_id})"
         return table_markdown(block)
     if isinstance(block, ListNode):
         return list_markdown(block)

@@ -56,6 +56,11 @@ class ParseOptions(BaseModel):
     dpi: int = 150
     extract_tables: bool = True
     extract_images: bool = True
+    # designs/009：表格 → 高清截图嵌入 markdown。table_image=True 且提供 image_dir 时生效；
+    # 无 image_dir 则不截图，markdown 自动回退表格（现行行为不变）。
+    table_image: bool = True
+    table_image_dpi: int = 300
+    deskew: bool = True
 
 
 # ---------------------------------------------------------------------------

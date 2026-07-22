@@ -130,8 +130,38 @@ class OcrExtractor:
             _os.makedirs(str(dump_dir), exist_ok=True)
             with open(_os.path.join(str(dump_dir), "postprocess_log.json"), "w", encoding="utf-8") as f:
                 _json.dump(pp_log, f, ensure_ascii=False, indent=2)
+        # 表格 → 高清截图（designs/009）：有 image_out_dir 且 table_image 时挂 table_image_id
+        _attach_table_images_ocr(options, image_out_dir, data, main_content, attach_segments)
         result = ExtractionResult(content=main_content, metadata=metadata, toc_entries=None)
         for seg in attach_segments:
             result.attachments.append(ExtractionResult(content=seg, metadata=DocumentMetadata(
                 source_type=SourceType.OCR, source_file=source_file, generator="attachment")))
         return result
+
+
+def _attach_table_images_ocr(options, image_out_dir, data, main_content, attach_segments):
+    """OCR 路径表格截图（designs/009）：有 image_out_dir 且 table_image 时挂 table_image_id。
+    options 支持 dict / 对象 / None；失败静默不阻断。"""
+    if not image_out_dir:
+        return
+    if options is None:
+        opts = {}
+    elif isinstance(options, dict):
+        opts = options
+    else:
+        opts = {k: getattr(options, k, None) for k in ("table_image", "table_image_dpi", "deskew")}
+    if not opts.get("table_image", True):
+        return
+    from document2chunk.extractors._table_image import attach_table_images
+
+    kw = dict(
+        image_dir=image_out_dir,
+        dpi=float(opts.get("table_image_dpi", 300)),
+        deskew=bool(opts.get("deskew", True)),
+    )
+    try:
+        attach_table_images(main_content, data, **kw)
+        for seg in attach_segments:
+            attach_table_images(seg, data, **kw)
+    except Exception:
+        pass
