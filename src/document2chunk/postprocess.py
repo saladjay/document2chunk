@@ -36,6 +36,9 @@ RE_CN_MAJOR = re.compile(rf"^{_NUM}、")
 RE_CN_MINOR = re.compile(rf"^[（(]{_NUM}[）)]")
 RE_DIGIT = re.compile(r"^(\d+[.．、]|[（(]\d+[）)])")  # 含全角句点 ．（与 heading_scorer 对齐）
 RE_APPENDIX = re.compile(r"^(附\s*[表录件]|附\s*录|appendix)", re.IGNORECASE)
+# 附件标题（用于段落边界）：marker 后必须跟 数字/冒号/括号，排除「附件正文」这类正文
+# heading 边界用宽 RE_APPENDIX（heading 可靠）；段落边界用此严正则
+RE_APPENDIX_TITLE = re.compile(r"^附\s*[表录件]\s*[:：．\.、0-9（(]")
 
 # 偏序（值小 = 高层级；非绝对 level，由栈序覆盖）
 _STYLE_ORDER: Dict[str, int] = {
@@ -676,6 +679,12 @@ def calibrate_levels(
 
     for i, b in enumerate(content):
         if not isinstance(b, HeadingNode):
+            # 附件边界为段落时（body-font 编号「附件1.xxx」未判 heading）也重置栈，
+            # 使附件内标题层级独立于正文（与 split_attachments 边界一致）
+            if RE_APPENDIX_TITLE.match((getattr(b, "text", "") or "").strip()):
+                prev_level = 0
+                style_levels = {}
+                next_style_level = 1
             new_content.append(b)
             continue
 
@@ -754,17 +763,26 @@ def split_attachments(
     *,
     _log: Optional[List[dict]] = None,
 ) -> Tuple[List[BlockNode], List[List[BlockNode]]]:
-    """按附表/附件/附录边界拆分 content → (正文, [附件1, 附件2, ...])。"""
+    """按附表/附件/附录边界拆分 content → (正文, [附件1, 附件2, ...])。
+
+    边界检测**不限于 HeadingNode**——附件标题常是 body-font 编号段落（如「附件1. xxx」），
+    ClassificationStage 未判为 heading，故对任意块的文本起首匹配 RE_APPENDIX 即开新段。
+    """
     def _log_add(**kw):
         if _log is not None:
             _log.append(kw)
 
     segments: List[List[BlockNode]] = [[]]
     for b in content:
-        if isinstance(b, HeadingNode) and RE_APPENDIX.match((b.text or "").strip()):
+        txt = (getattr(b, "text", "") or "").strip()
+        is_boundary = (
+            (isinstance(b, HeadingNode) and bool(RE_APPENDIX.match(txt)))
+            or (not isinstance(b, HeadingNode) and bool(RE_APPENDIX_TITLE.match(txt)))
+        )
+        if txt and is_boundary:
             segments.append([b])
             _log_add(section="split", split_at=getattr(b, "id", ""),
-                     heading=(b.text or "")[:30], segment=f"attachment_{len(segments) - 1}")
+                     heading=txt[:30], segment=f"attachment_{len(segments) - 1}")
         else:
             segments[-1].append(b)
     if len(segments) == 1:

@@ -52,7 +52,7 @@ def _parse_one(pdf: Path, out_dir: Path, do_viz: bool) -> dict:
 
     row: dict = {"file": pdf.name, "group": pdf.parent.name, "status": "ok",
                  "pdf_type": "", "source_type": "", "pages": "", "blocks": "",
-                 "headings": "", "tables": "", "images": "", "time_s": ""}
+                 "headings": "", "tables": "", "images": "", "attachments": "", "time_s": ""}
     t0 = time.time()
 
     # 分类
@@ -96,6 +96,14 @@ def _parse_one(pdf: Path, out_dir: Path, do_viz: bool) -> dict:
     (sub / "output.md").write_text(to_markdown(doc), encoding="utf-8")
     (sub / "document.json").write_text(to_json(doc), encoding="utf-8")
 
+    # 附件独立输出（designs/007 R6 / 009）：每个 LogicalDocument.attachments → output_附件N.md
+    for i, att in enumerate(getattr(doc, "attachments", []) or [], 1):
+        try:
+            (sub / f"output_附件{i}.md").write_text(to_markdown(att), encoding="utf-8")
+        except Exception:
+            pass
+    row["attachments"] = len(getattr(doc, "attachments", []) or [])
+
     if do_viz:
         try:
             from document2chunk.debug import visualize
@@ -115,6 +123,7 @@ def main() -> None:
     ap.add_argument("--classify-only", action="store_true", help="只跑 pdf_detect 分类，不解析")
     ap.add_argument("--sample", type=int, default=0, help="只处理前 N 个（0=全部）")
     ap.add_argument("--viz", action="store_true", help="生成 bbox 叠加可视化（OCR 慢）")
+    ap.add_argument("--answer", default=None, help="参考答案根目录（同结构 group/stem/output.md），解析后自动逐份对比")
     args = ap.parse_args()
 
     in_dir = Path(args.input_dir)
@@ -153,7 +162,7 @@ def main() -> None:
         except Exception as e:
             row = {"file": pdf.name, "group": pdf.parent.name, "status": f"ERROR:{type(e).__name__}:{str(e)[:100]}",
                    "pdf_type": "", "source_type": "", "pages": "", "blocks": "",
-                   "headings": "", "tables": "", "images": "", "time_s": ""}
+                   "headings": "", "tables": "", "images": "", "attachments": "", "time_s": ""}
             print("   [ERR]", row["status"])
             traceback.print_exc(limit=2)
         else:
@@ -166,6 +175,56 @@ def main() -> None:
     print(f"成功 {sum(1 for r in rows if r['status']=='ok')} / 失败 {sum(1 for r in rows if r['status']!='ok')}")
     dist = Counter(r["source_type"] for r in rows if r["status"] == "ok")
     print("source_type 分布:", dict(dist))
+
+    if args.answer:
+        _compare_with_answer(out_dir, Path(args.answer), rows)
+
+
+def _compare_with_answer(out_dir: Path, answer_root: Path, rows: list) -> None:
+    """逐份对比 output.md 与参考答案（同 group/stem 结构）。
+
+    指标：全文相似度（SequenceMatcher）、标题行数（我 vs 答案）、缺失/多余标题。
+    答案为正文参考（非附件），仅对比主 output.md。
+    """
+    import difflib
+
+    comp_rows = []
+    for r in rows:
+        if r["status"] != "ok":
+            continue
+        stem = Path(r["file"]).stem
+        mine = out_dir / r["group"] / stem / "output.md"
+        ans = answer_root / r["group"] / stem / "output.md"
+        if not mine.exists():
+            continue
+        base = {"file": r["file"][:38], "group": r["group"]}
+        if not ans.exists():
+            comp_rows.append({**base, "answer": "missing", "sim": "", "my_h": "", "ans_h": "",
+                              "missing_h": "", "extra_h": ""})
+            continue
+        my_txt = mine.read_text(encoding="utf-8")
+        ans_txt = ans.read_text(encoding="utf-8")
+        my_h = [l.strip() for l in my_txt.splitlines() if l.strip().startswith("#")]
+        ans_h = [l.strip() for l in ans_txt.splitlines() if l.strip().startswith("#")]
+        sim = difflib.SequenceMatcher(None, my_txt, ans_txt).ratio()
+        my_set, ans_set = set(my_h), set(ans_h)
+        comp_rows.append({
+            **base, "answer": "ok", "sim": f"{sim:.2f}",
+            "my_h": len(my_h), "ans_h": len(ans_h),
+            "missing_h": len(ans_set - my_set), "extra_h": len(my_set - ans_set),
+        })
+
+    _write_csv(out_dir / "comparison.csv", comp_rows)
+    print(f"\n=== 对比答案 → {out_dir/'comparison.csv'} ===")
+    print(f"{'文档':<30}{'相似度':<8}{'标题 我/答':<12}{'缺':<5}{'多':<5}")
+    for c in comp_rows:
+        if c["answer"] != "ok":
+            print(f"{c['file'][:28]:<30}{c['answer']}")
+        else:
+            print(f"{c['file'][:28]:<30}{c['sim']:<8}{c['my_h']}/{c['ans_h']:<7}{c['missing_h']:<5}{c['extra_h']:<5}")
+    sims = [float(c["sim"]) for c in comp_rows if c["answer"] == "ok"]
+    if sims:
+        print(f"\n平均相似度: {sum(sims) / len(sims):.2f}（{len(sims)} 份有答案）")
 
 
 def _write_csv(path: Path, rows: list) -> None:
