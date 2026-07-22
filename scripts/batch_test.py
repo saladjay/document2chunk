@@ -234,10 +234,22 @@ def _write_csv(path: Path, rows: list) -> None:
     if not rows:
         return
     fields = list(rows[0].keys())
-    with open(path, "w", newline="", encoding="utf-8-sig") as f:
-        w = csv.DictWriter(f, fieldnames=fields)
-        w.writeheader()
-        w.writerows(rows)
+    # 文件被占用（Excel 打开等）→ 写带后缀备选名，不崩溃
+    target = path
+    suffix = 1
+    while suffix < 20:
+        try:
+            with open(target, "w", newline="", encoding="utf-8-sig") as f:
+                w = csv.DictWriter(f, fieldnames=fields)
+                w.writeheader()
+                w.writerows(rows)
+            if target != path:
+                print(f"   [warn] {path.name} 被占用，改写 → {target.name}")
+            return
+        except PermissionError:
+            target = path.with_name(f"{path.stem}_{suffix}{path.suffix}")
+            suffix += 1
+    print(f"   [warn] {path} 多次被占用，跳过写入")
 
 
 if __name__ == "__main__":
