@@ -202,29 +202,36 @@ def _compare_with_answer(out_dir: Path, answer_root: Path, rows: list) -> None:
             comp_rows.append({**base, "answer": "missing", "sim": "", "my_h": "", "ans_h": "",
                               "missing_h": "", "extra_h": ""})
             continue
-        # 主文 + 附件文件拼接（附件拆独立文件，答案含全文，拼接后对比才公平）
-        my_txt = mine.read_text(encoding="utf-8")
+        # 答案含附件与否不一致：取 max(主文, 主文+附件) 相似度最公允
+        my_main = mine.read_text(encoding="utf-8")
+        my_full = my_main
         for att_file in sorted(mine.parent.glob("output_附件*.md")):
-            my_txt += "\n" + att_file.read_text(encoding="utf-8")
+            my_full += "\n" + att_file.read_text(encoding="utf-8")
         ans_txt = ans.read_text(encoding="utf-8")
+        sim_main = difflib.SequenceMatcher(None, my_main, ans_txt).ratio()
+        sim_full = difflib.SequenceMatcher(None, my_full, ans_txt).ratio()
+        sim = max(sim_main, sim_full)
+        scope = "主文" if sim_main >= sim_full else "主文+附件"
+        # 标题对比用与答案更匹配的范围
+        my_txt = my_main if scope == "主文" else my_full
         my_h = [l.strip() for l in my_txt.splitlines() if l.strip().startswith("#")]
         ans_h = [l.strip() for l in ans_txt.splitlines() if l.strip().startswith("#")]
-        sim = difflib.SequenceMatcher(None, my_txt, ans_txt).ratio()
         my_set, ans_set = set(my_h), set(ans_h)
         comp_rows.append({
-            **base, "answer": "ok", "sim": f"{sim:.2f}",
+            **base, "answer": "ok", "sim": f"{sim:.2f}", "scope": scope,
             "my_h": len(my_h), "ans_h": len(ans_h),
             "missing_h": len(ans_set - my_set), "extra_h": len(my_set - ans_set),
         })
 
     _write_csv(out_dir / "comparison.csv", comp_rows)
     print(f"\n=== 对比答案 → {out_dir/'comparison.csv'} ===")
-    print(f"{'文档':<30}{'相似度':<8}{'标题 我/答':<12}{'缺':<5}{'多':<5}")
+    print(f"{'文档':<28}{'相似度':<7}{'范围':<10}{'标题 我/答':<10}{'缺':<4}{'多':<4}")
     for c in comp_rows:
         if c["answer"] != "ok":
-            print(f"{c['file'][:28]:<30}{c['answer']}")
+            print(f"{c['file'][:26]:<28}{c['answer']}")
         else:
-            print(f"{c['file'][:28]:<30}{c['sim']:<8}{c['my_h']}/{c['ans_h']:<7}{c['missing_h']:<5}{c['extra_h']:<5}")
+            print(f"{c['file'][:26]:<28}{c['sim']:<7}{c.get('scope','')[:9]:<10}"
+                  f"{c['my_h']}/{c['ans_h']:<7}{c['missing_h']:<4}{c['extra_h']:<4}")
     sims = [float(c["sim"]) for c in comp_rows if c["answer"] == "ok"]
     if sims:
         print(f"\n平均相似度: {sum(sims) / len(sims):.2f}（{len(sims)} 份有答案）")
