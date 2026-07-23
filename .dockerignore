@@ -1,0 +1,18 @@
+# 只把 mineru2doc/ 送进构建上下文，其余排除（减上下文体积）
+.git
+.gitignore
+.venv
+.pytest_cache
+__pycache__
+*.pyc
+.claude
+docs
+openspec
+scripts
+src
+tests
+issues*.md
+澄清*.md
+uv.lock
+pyproject.toml
+conftest.py
