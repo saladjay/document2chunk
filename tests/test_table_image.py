@@ -263,6 +263,24 @@ def test_markdown_table_fallback_without_image_id():
     print("OK test_markdown_table_fallback_without_image_id")
 
 
+def test_markdown_complex_table_renders_html():
+    # 复杂表（含 colspan）→ HTML <table>（保留 colspan/rowspan）
+    t = _mkmtable(bbox=None)  # colspan=2 表头 + 数据行
+    md = block_markdown(t)
+    assert md.startswith("<table>") and md.endswith("</table>")
+    assert 'colspan="2"' in md
+    assert "<td>a</td>" in md and "<td>b</td>" in md  # 数据行普通 td
+    print("OK test_markdown_complex_table_renders_html")
+
+
+def test_markdown_complex_table_image_overrides_html():
+    # 复杂表 + image 模式（挂了 table_image_id）→ 图片优先于 html
+    t = _mkmtable(bbox=None)
+    t.table_image_id = "table_p0_0.png"
+    assert block_markdown(t) == "![表格](table_p0_0.png)"
+    print("OK test_markdown_complex_table_image_overrides_html")
+
+
 # ---------- 真机快照（skip-if-missing）----------
 
 
@@ -300,6 +318,8 @@ def main():
     test_deskew_tilted_text_improves_alignment()
     test_markdown_table_with_image_id()
     test_markdown_table_fallback_without_image_id()
+    test_markdown_complex_table_renders_html()
+    test_markdown_complex_table_image_overrides_html()
     test_real_p19_snapshot()
     print("\nALL TABLE IMAGE TESTS PASSED")
 

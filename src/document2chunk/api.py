@@ -56,13 +56,11 @@ class ParseOptions(BaseModel):
     dpi: int = 150
     extract_tables: bool = True
     extract_images: bool = True
-    # designs/009：表格 → 高清截图嵌入 markdown。table_image=True 且提供 image_dir 时生效；
-    # 无 image_dir 则不截图，markdown 自动回退表格（现行行为不变）。
-    table_image: bool = True
+    # designs/009：复杂表（含合并格）的渲染——"html"（默认，HTML <table> 保留 colspan/rowspan，
+    # 全程文字）/ "image"（高清截图，需 image_dir）。简单表（无合并格）始终走 markdown 管道表格。
+    table_complex_format: str = "html"
     table_image_dpi: int = 300
     deskew: bool = True
-    # designs/009：merged（默认，仅含合并格的复杂表截图，简单表走结构）/ all（全部截图）。
-    table_image_mode: str = "merged"
 
 
 # ---------------------------------------------------------------------------

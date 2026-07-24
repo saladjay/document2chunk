@@ -40,30 +40,34 @@ colspan/rowspan 错乱、文字落位偏、OCR 噪声，且服务 ``cell_box_lis
 
 ### 3.2 markdown 渲染（``export/_helpers.py``）
 
-``block_markdown`` 的 ``TableNode`` 分支：有 ``table_image_id`` → ``![表格](table_image_id)``；
-无 → 回退 ``table_markdown``。
+``block_markdown`` 的 ``TableNode`` 分支三分流（结构数据始终在 IR）：
+1. 挂了 ``table_image_id``（复杂表 + image 模式）→ ``![表格](table_image_id)``。
+2. 含合并格的复杂表（默认 html 模式，未截图）→ ``html_table_markdown``：HTML ``<table>``，
+   **保留 colspan/rowspan**（markdown 管道表格不支持合并；HTML 表格在 GitHub/VS Code/pandoc 等多数
+   渲染器可用，全程文字、可检索）。
+3. 简单表（全 1×1）→ ``table_markdown``（markdown 管道表格）。
 
 ### 3.3 extractor 接入
 
-- ``PdfExtractor.extract``（``pdf.py:603``）：``split_attachments`` 后，有 ``image_dir`` 且
-  ``table_image`` → ``attach_table_images`` 对 ``main_content`` + 各 ``attach_segment``。``_attach_table_images_all``。
-- ``OcrExtractor.extract``（``ocr/extractor.py:59``）：同（``image_out_dir`` + ``data``）。``_attach_table_images_ocr``。
-- options：``ParseOptions`` 加 ``table_image=True`` / ``table_image_dpi=300`` / ``deskew=True`` /
-  ``table_image_mode="merged"``；``pdf._normalize_options`` 白名单同步。
-- **默认安全**：无 ``image_dir`` 时不落盘 → 不挂 ``table_image_id`` → markdown 自动回退表格（现行行为不变）。
+- ``PdfExtractor.extract`` / ``OcrExtractor.extract``：``split_attachments`` 后，仅当
+  ``table_complex_format="image"`` 且有 ``image_dir``/``image_out_dir`` 时，对 ``main_content`` + 各
+  ``attach_segment`` 调 ``attach_table_images(mode="merged")`` 给复杂表挂 ``table_image_id``。
+- **默认 html 模式不截图**：复杂表由 ``block_markdown`` 自动渲染成 HTML 表格（无需 image_dir）。
+- options：``ParseOptions.table_complex_format="html"``（默认）| ``"image"``；``table_image_dpi=300``、
+  ``deskew=True``（仅 image 模式用）；``pdf._normalize_options`` 白名单同步。
 
 ### 3.4 命名
 
 复用 ``image_dir``/``image_out_dir``；表图前缀 ``table_``，与普通图 ``p{page}_{idx}.{fmt}`` 不冲突。
 
-### 3.5 简单/复杂表分流（``table_image_mode``）
+### 3.5 简单/复杂表分流
 
-并非所有表都该截图——简单表（无合并单元格）结构识别可靠，走 markdown 表格（文字可检索/编辑）；
-**复杂表（含合并单元格）** 结构识别易错，才截图。``attach_table_images(mode=...)``：
+- **简单表**（``_has_merged_cells`` 为假，全 1×1）→ markdown 管道表格（结构识别可靠，文字可检索/编辑）。
+- **复杂表**（含 ``colspan>1`` 或 ``rowspan>1``）→ 按 ``table_complex_format``：``"html"``（默认，
+  HTML 表格保留合并）/ ``"image"``（高清截图，需 image_dir）。
 
-- ``mode="merged"``（**默认**）：``_has_merged_cells(table)``（任一格 ``colspan>1`` 或 ``rowspan>1``）
-  为真才截图；简单表（全 1×1）跳过 → markdown 渲染表格。
-- ``mode="all"``：所有表都截图（无论是否合并）。
+分类信号依赖结构 colspan/rowspan——**OCR 路**（``ocr/_mapping._html_table_to_node`` 解析 html）可靠；
+**PDF 路**（``_mapping._table_to_table_node`` 当前扁平化为 1×1）总判为「简单」（见 §6）。
 
 分类信号依赖结构数据的 colspan/rowspan——**OCR 路**（``ocr/_mapping._html_table_to_node`` 解析 html
 ``colspan/rowspan``）可靠；**PDF 路**（``_mapping._table_to_table_node`` 当前扁平化为 1×1）总判为「简单」

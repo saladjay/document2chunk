@@ -737,9 +737,10 @@ class PdfExtractor:
 
 
 def _attach_table_images_all(opts, image_dir, source, main_content, attach_segments):
-    """表格 → 高清截图（designs/009）：给每张表挂 ``table_image_id``，markdown 优先渲染图片。
-    有 ``image_dir`` 且 ``table_image`` 开启时才跑；失败静默不阻断抽取。"""
-    if not image_dir or not opts.get("table_image", True):
+    """复杂表 → 高清截图（designs/009 §image 模式）：仅 ``table_complex_format="image"`` 且
+    有 ``image_dir`` 时给复杂表挂 ``table_image_id``。默认 html 模式不截图（block_markdown
+    自动把复杂表渲染成 HTML 表格）。失败静默不阻断抽取。"""
+    if not image_dir or opts.get("table_complex_format", "html") != "image":
         return
     from document2chunk.extractors._table_image import attach_table_images
 
@@ -747,7 +748,7 @@ def _attach_table_images_all(opts, image_dir, source, main_content, attach_segme
         image_dir=image_dir,
         dpi=float(opts.get("table_image_dpi", 300)),
         deskew=bool(opts.get("deskew", True)),
-        mode=str(opts.get("table_image_mode", "merged")),
+        mode="merged",  # 仅复杂表（含合并格）截图，简单表走管道表格
     )
     try:
         attach_table_images(main_content, source, **kw)
@@ -772,10 +773,9 @@ def _normalize_options(options: Any) -> dict[str, Any]:
         "pages",
         "layout_jsonl",
         "debug_dir",
-        "table_image",
         "table_image_dpi",
         "deskew",
-        "table_image_mode",
+        "table_complex_format",
     ):
         val = getattr(options, key, None)
         if val is not None:

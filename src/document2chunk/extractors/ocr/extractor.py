@@ -140,8 +140,8 @@ class OcrExtractor:
 
 
 def _attach_table_images_ocr(options, image_out_dir, data, main_content, attach_segments):
-    """OCR 路径表格截图（designs/009）：有 image_out_dir 且 table_image 时挂 table_image_id。
-    options 支持 dict / 对象 / None；失败静默不阻断。"""
+    """OCR 路径复杂表截图（designs/009 §image 模式）：仅 ``table_complex_format="image"`` 且
+    有 image_out_dir 时挂 table_image_id。默认 html 模式不截图（复杂表 → HTML 表格）。"""
     if not image_out_dir:
         return
     if options is None:
@@ -149,8 +149,8 @@ def _attach_table_images_ocr(options, image_out_dir, data, main_content, attach_
     elif isinstance(options, dict):
         opts = options
     else:
-        opts = {k: getattr(options, k, None) for k in ("table_image", "table_image_dpi", "deskew", "table_image_mode")}
-    if not opts.get("table_image", True):
+        opts = {k: getattr(options, k, None) for k in ("table_image_dpi", "deskew", "table_complex_format")}
+    if opts.get("table_complex_format", "html") != "image":
         return
     from document2chunk.extractors._table_image import attach_table_images
 
@@ -158,7 +158,7 @@ def _attach_table_images_ocr(options, image_out_dir, data, main_content, attach_
         image_dir=image_out_dir,
         dpi=float(opts.get("table_image_dpi", 300)),
         deskew=bool(opts.get("deskew", True)),
-        mode=str(opts.get("table_image_mode", "merged")),
+        mode="merged",
     )
     try:
         attach_table_images(main_content, data, **kw)
