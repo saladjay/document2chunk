@@ -346,8 +346,9 @@ def test_postprocess_full_flow():
         P("国土资源部关于通知文件", page=2, bbox=(0, 0, 100, 10)),
         H("一、章节", level=1, page=2, bbox=(0, 50, 100, 70)),
         P(body2, page=2, bbox=(0, 100, 500, 820)),
-        H("附件：附表内容", level=1, page=2, bbox=(0, 820, 100, 840)),
-        P("附件正文", page=2, bbox=(0, 840, 100, 860)),
+        # 附件在新页顶部起头（y0=50 < 842×25%，符合 A 方案页顶判据）
+        H("附件：附表内容", level=1, page=3, bbox=(0, 50, 100, 70)),
+        P("附件正文", page=3, bbox=(0, 100, 500, 820)),
     ]
     md = _md()
     main, attach = postprocess(content, md, page_geometry=GEO, use_height_fallback=True)

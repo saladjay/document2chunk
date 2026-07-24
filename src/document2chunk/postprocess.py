@@ -758,15 +758,36 @@ def calibrate_levels(
 #  ④ split_attachments —— 附件拆分
 # ══════════════════════════════════════
 
+_ATTACHMENT_TOP_RATIO = 0.25  # 附件标记在页内 y0 < 页高×此（左上角/页顶）
+
+
+def _at_page_top(b: BlockNode, page_geometry: Optional[Dict[int, Tuple[float, float]]]) -> bool:
+    """块是否在所在页的顶部（y0 < 页高×_ATTACHMENT_TOP_RATIO）。
+
+    无 page_geometry 或块无 provenance/bbox → 返回 True（退化为纯正则，向后兼容）。
+    """
+    if not page_geometry:
+        return True
+    prov = getattr(b, "provenance", None)
+    if not prov or not prov.bbox or prov.page_index is None:
+        return True
+    ph = page_geometry.get(prov.page_index, (0.0, 0.0))[1]
+    if ph <= 0:
+        return True
+    return prov.bbox[1] < ph * _ATTACHMENT_TOP_RATIO
+
+
 def split_attachments(
     content: List[BlockNode],
     *,
+    page_geometry: Optional[Dict[int, Tuple[float, float]]] = None,
     _log: Optional[List[dict]] = None,
 ) -> Tuple[List[BlockNode], List[List[BlockNode]]]:
     """按附表/附件/附录边界拆分 content → (正文, [附件1, 附件2, ...])。
 
-    边界检测**不限于 HeadingNode**——附件标题常是 body-font 编号段落（如「附件1. xxx」），
-    ClassificationStage 未判为 heading，故对任意块的文本起首匹配 RE_APPENDIX 即开新段。
+    边界判据（A 方案）：文本起首匹配附件正则 **且** 标记在页顶（y0 < 页高×25%）。
+    公文附件一般在新页左上角起头；页中/页下的「附件N.」多为正文引用，不切。
+    heading 用宽 RE_APPENDIX（可靠）；段落用严 RE_APPENDIX_TITLE（排除「附件正文」）。
     """
     def _log_add(**kw):
         if _log is not None:
@@ -775,11 +796,14 @@ def split_attachments(
     segments: List[List[BlockNode]] = [[]]
     for b in content:
         txt = (getattr(b, "text", "") or "").strip()
-        is_boundary = (
+        if not txt:
+            segments[-1].append(b)
+            continue
+        regex_ok = (
             (isinstance(b, HeadingNode) and bool(RE_APPENDIX.match(txt)))
             or (not isinstance(b, HeadingNode) and bool(RE_APPENDIX_TITLE.match(txt)))
         )
-        if txt and is_boundary:
+        if regex_ok and _at_page_top(b, page_geometry):
             segments.append([b])
             _log_add(section="split", split_at=getattr(b, "id", ""),
                      heading=txt[:30], segment=f"attachment_{len(segments) - 1}")
@@ -820,7 +844,7 @@ def postprocess(
         page_widths=page_widths, toc_entries=toc_entries,
         use_height_fallback=use_height_fallback, _log=_log,
     )
-    main_content, attach_segments = split_attachments(blocks, _log=_log)
+    main_content, attach_segments = split_attachments(blocks, page_geometry=page_geometry, _log=_log)
     return main_content, attach_segments
 
 

@@ -60,6 +60,11 @@ class MergeStage:
         current = self._copy_elem(elements[0])
 
         for elem in elements[1:]:
+            # 位置去重：相邻元素 bbox 近似相同 = PyMuPDF 重复抽取同一行（HTML-PDF 常见），
+            # 丢一份而非拼接（否则标题文本翻倍）。四坐标差均 <2pt 判为同位置。
+            if MergeStage._is_duplicate_extraction(current, elem):
+                continue
+
             if self._can_merge(current, elem, standard_spacing):
                 # 合并文本
                 current["text"] = current["text"] + elem["text"]
@@ -87,6 +92,20 @@ class MergeStage:
 
         merged.append(current)
         return merged
+
+    @staticmethod
+    def _is_duplicate_extraction(elem1: dict, elem2: dict, tol: float = 2.0) -> bool:
+        """判断 elem2 是否是 elem1 的重复抽取（同位置 + 同文本）。
+
+        PyMuPDF 在 HTML 版 PDF 上常把同一行抽取两次（bbox 逐字节相同）。
+        四坐标差均 < tol 且文本相同 → 重复，应丢一份而非拼接。
+        """
+        b1, b2 = elem1.get("bbox"), elem2.get("bbox")
+        if not b1 or not b2 or len(b1) < 4 or len(b2) < 4:
+            return False
+        if any(abs(a - b) > tol for a, b in zip(b1[:4], b2[:4])):
+            return False
+        return (elem1.get("text") or "") == (elem2.get("text") or "")
 
     @staticmethod
     def _can_merge(
