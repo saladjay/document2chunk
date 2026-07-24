@@ -348,33 +348,10 @@ def create_app():
     async def health():
         return {"status": "ok", "version": __version__}
 
-    @app.post("/parse")
-    async def parse_file(
-        request: Request,
-        source_type: Optional[str] = None,
-        keep_toc: bool = False,
-        extract_images: bool = True,
-    ):
-        data, filename = await _read_upload(request)
-        st = _coerce_source_type(source_type)
-        doc = parse(
-            data,
-            source_type=st,
-            keep_toc=keep_toc,
-            extract_images=extract_images,
-        )
-        if filename and doc.metadata.source_file is None:
-            doc.metadata.source_file = filename
-        import json
-
-        return {
-            "document": json.loads(doc.model_dump_json(exclude_none=True)),
-            "markdown": _to_markdown(doc),
-        }
-
-    @app.post("/parse-pdf")
-    async def parse_pdf(request: Request):
-        """Chai 复杂解析对接：路径模式（file_path/output_dir/image_dir）/ zip 模式（文件→zip）。"""
+    async def _chai_parse(request: Request):
+        """Chai 对接契约（/parse 与 /parse-pdf 共用，与 mineru2doc :9300/parse 一致）：
+        路径模式(file_path/output_dir/image_dir)→写 result.md+images，返回 {status:ok}；
+        zip 模式(文件二进制)→返回 zip 流(result.md+images/)。可选 demote。"""
         from document2chunk import serve
 
         ctype = request.headers.get("content-type", "")
@@ -413,6 +390,40 @@ def create_app():
             raise HTTPException(status_code=500, detail=f"{type(exc).__name__}: {exc}") from exc
         from fastapi.responses import Response
         return Response(content=zip_bytes, media_type="application/zip")
+
+    # /parse 与 /parse-pdf 同契约（Chai 对接，与 mineru2doc :9300/parse 一致）
+    @app.post("/parse")
+    async def parse_file(request: Request):
+        return await _chai_parse(request)
+
+    @app.post("/parse-pdf")
+    async def parse_pdf(request: Request):
+        return await _chai_parse(request)
+
+    # 库 API（旧 /parse 行为）：上传文件 → {document IR, markdown}
+    @app.post("/parse-json")
+    async def parse_json(
+        request: Request,
+        source_type: Optional[str] = None,
+        keep_toc: bool = False,
+        extract_images: bool = True,
+    ):
+        data, filename = await _read_upload(request)
+        st = _coerce_source_type(source_type)
+        doc = parse(
+            data,
+            source_type=st,
+            keep_toc=keep_toc,
+            extract_images=extract_images,
+        )
+        if filename and doc.metadata.source_file is None:
+            doc.metadata.source_file = filename
+        import json
+
+        return {
+            "document": json.loads(doc.model_dump_json(exclude_none=True)),
+            "markdown": _to_markdown(doc),
+        }
 
     return app
 

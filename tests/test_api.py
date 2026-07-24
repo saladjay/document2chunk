@@ -199,7 +199,7 @@ def test_http_health_and_parse():
 
     # 原始请求体（无需 python-multipart）
     r = client.post(
-        "/parse?source_type=docx&filename=a.docx",
+        "/parse-json?source_type=docx&filename=a.docx",
         content=b"PK\x03\x04",
         headers={"content-type": "application/octet-stream"},
     )
@@ -217,7 +217,7 @@ def test_http_unsupported_400():
 
     client = TestClient(api.create_app())
     r = client.post(
-        "/parse?source_type=html",
+        "/parse-json?source_type=html",
         content=b"x",
         headers={"content-type": "application/octet-stream"},
     )
