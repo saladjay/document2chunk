@@ -1,4 +1,4 @@
-# 只把 mineru2doc/ 送进构建上下文，其余排除（减上下文体积）
+# 构建上下文瘦身（mineru2doc 只需 mineru2doc/；d2c 需 src + pyproject.toml，故不排除）
 .git
 .gitignore
 .venv
@@ -9,10 +9,8 @@ __pycache__
 docs
 openspec
 scripts
-src
 tests
 issues*.md
 澄清*.md
 uv.lock
-pyproject.toml
 conftest.py
