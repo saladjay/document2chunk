@@ -758,25 +758,6 @@ def calibrate_levels(
 #  ④ split_attachments —— 附件拆分
 # ══════════════════════════════════════
 
-_ATTACHMENT_TOP_RATIO = 0.25  # 附件标记在页内 y0 < 页高×此（左上角/页顶）
-
-
-def _at_page_top(b: BlockNode, page_geometry: Optional[Dict[int, Tuple[float, float]]]) -> bool:
-    """块是否在所在页的顶部（y0 < 页高×_ATTACHMENT_TOP_RATIO）。
-
-    无 page_geometry 或块无 provenance/bbox → 返回 True（退化为纯正则，向后兼容）。
-    """
-    if not page_geometry:
-        return True
-    prov = getattr(b, "provenance", None)
-    if not prov or not prov.bbox or prov.page_index is None:
-        return True
-    ph = page_geometry.get(prov.page_index, (0.0, 0.0))[1]
-    if ph <= 0:
-        return True
-    return prov.bbox[1] < ph * _ATTACHMENT_TOP_RATIO
-
-
 def split_attachments(
     content: List[BlockNode],
     *,
@@ -785,9 +766,12 @@ def split_attachments(
 ) -> Tuple[List[BlockNode], List[List[BlockNode]]]:
     """按附表/附件/附录边界拆分 content → (正文, [附件1, 附件2, ...])。
 
-    边界判据（A 方案）：文本起首匹配附件正则 **且** 标记在页顶（y0 < 页高×25%）。
-    公文附件一般在新页左上角起头；页中/页下的「附件N.」多为正文引用，不切。
-    heading 用宽 RE_APPENDIX（可靠）；段落用严 RE_APPENDIX_TITLE（排除「附件正文」）。
+    策略：**所有附件都拆成独立段**（用户要求）。边界 = 块文本起首匹配附件正则。
+    - heading 用宽 RE_APPENDIX（可靠）；段落用严 RE_APPENDIX_TITLE（附件+数字/冒号，
+      排除「附件正文」）。
+    - ④ 同一块含 >1 个附件标记 = 引用清单（如「附件1：A 附件2：B」），不切。
+    - page_geometry 暂留参数（page-top 曾作信号，但会漏掉 edited-PDF 页中附件，
+      已撤为非硬门；位置/实质内容判据待数据支撑后再加，见 designs/010）。
     """
     def _log_add(**kw):
         if _log is not None:
@@ -803,7 +787,9 @@ def split_attachments(
             (isinstance(b, HeadingNode) and bool(RE_APPENDIX.match(txt)))
             or (not isinstance(b, HeadingNode) and bool(RE_APPENDIX_TITLE.match(txt)))
         )
-        if regex_ok and _at_page_top(b, page_geometry):
+        # ④ 引用清单：一块里 >1 个附件标记 → 不切
+        multi_ref = len(re.findall(r"附\s*[件表录]\s*[:：．\.、0-9（(]", txt)) > 1
+        if regex_ok and not multi_ref:
             segments.append([b])
             _log_add(section="split", split_at=getattr(b, "id", ""),
                      heading=txt[:30], segment=f"attachment_{len(segments) - 1}")
