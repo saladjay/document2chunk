@@ -48,21 +48,37 @@ colspan/rowspan 错乱、文字落位偏、OCR 噪声，且服务 ``cell_box_lis
 - ``PdfExtractor.extract``（``pdf.py:603``）：``split_attachments`` 后，有 ``image_dir`` 且
   ``table_image`` → ``attach_table_images`` 对 ``main_content`` + 各 ``attach_segment``。``_attach_table_images_all``。
 - ``OcrExtractor.extract``（``ocr/extractor.py:59``）：同（``image_out_dir`` + ``data``）。``_attach_table_images_ocr``。
-- options：``ParseOptions`` 加 ``table_image=True`` / ``table_image_dpi=300`` / ``deskew=True``；
-  ``pdf._normalize_options`` 白名单同步。
-- **默认 True 安全**：无 ``image_dir`` 时不落盘 → 不挂 ``table_image_id`` → markdown 自动回退表格（现行行为不变）。
+- options：``ParseOptions`` 加 ``table_image=True`` / ``table_image_dpi=300`` / ``deskew=True`` /
+  ``table_image_mode="merged"``；``pdf._normalize_options`` 白名单同步。
+- **默认安全**：无 ``image_dir`` 时不落盘 → 不挂 ``table_image_id`` → markdown 自动回退表格（现行行为不变）。
 
 ### 3.4 命名
 
 复用 ``image_dir``/``image_out_dir``；表图前缀 ``table_``，与普通图 ``p{page}_{idx}.{fmt}`` 不冲突。
 
+### 3.5 简单/复杂表分流（``table_image_mode``）
+
+并非所有表都该截图——简单表（无合并单元格）结构识别可靠，走 markdown 表格（文字可检索/编辑）；
+**复杂表（含合并单元格）** 结构识别易错，才截图。``attach_table_images(mode=...)``：
+
+- ``mode="merged"``（**默认**）：``_has_merged_cells(table)``（任一格 ``colspan>1`` 或 ``rowspan>1``）
+  为真才截图；简单表（全 1×1）跳过 → markdown 渲染表格。
+- ``mode="all"``：所有表都截图（无论是否合并）。
+
+分类信号依赖结构数据的 colspan/rowspan——**OCR 路**（``ocr/_mapping._html_table_to_node`` 解析 html
+``colspan/rowspan``）可靠；**PDF 路**（``_mapping._table_to_table_node`` 当前扁平化为 1×1）总判为「简单」
+（见 §6 限制）。
+
 ## 4. 实测
 
-- 单测 ``tests/test_table_image.py``（11 例）：PDF 点 bbox 缩放裁剪、image 源像素裁剪、
-  padding 外扩、无 bbox/非表块/越界静默跳过、``_deskew``（空白不动 + 倾斜校正提升方差）、
-  markdown（有/无 ``table_image_id``）、p19 真机快照（fitz 渲染落盘）。
-- 真机端到端（OCR 路径，自然资规2019-1号 p19）：OCR 检出表 ``bbox=[39,174,782,462]``（PDF 点）→
-  挂 ``table_image_id=table_p0_0.png`` → 落盘 **3158×1277** 高清图、有内容 ✓。
+## 4. 实测
+
+- 单测 ``tests/test_table_image.py``（15 例）：PDF 点 bbox 缩放裁剪、image 源像素裁剪、
+  padding 外扩、无 bbox/非表块/越界静默跳过、**简单/复杂表分流**（merged 跳过简单表、截复杂表、
+  all 全截、混合文档分流）、``_deskew``（空白不动 + 倾斜校正提升方差）、markdown（有/无
+  ``table_image_id``）、p19 真机快照（fitz 渲染落盘）。
+- 真机端到端（OCR 路径，自然资规2019-1号 p19，默认 merged 模式）：OCR 检出含合并格的复杂表
+  ``bbox=[39,174,782,462]`` → 挂 ``table_image_id=table_p0_0.png`` → 落盘 **3158×1277** 高清图 ✓。
 - 注：自然资规2019-1号 是**扫描件**，走 OCR 路径；PdfExtractor（span）对扫描件无表（属预期，路由 OCR）。
 
 ## 5. 与 designs/008 的关系
@@ -77,6 +93,9 @@ colspan/rowspan 错乱、文字落位偏、OCR 噪声，且服务 ``cell_box_lis
 - **OCR-image bbox 紧度**：版面检测区域可能偏松/紧 → 截图边距。``padding`` 缓解；严重时联合 ``cell_box_list`` 收紧。
 - **``api.parse()`` 不透传 ``image_dir``**：现普通图也不透传（统一后续做）；目前直接调 extractor + ``image_dir`` 生效。
 - **deskew 仅投影法**：扫描件严重倾斜可后续上 opencv（``minAreaRect``）。
+- **PDF 路 colspan/rowspan 扁平化**：``_mapping._table_to_table_node`` 未解析合并 → PDF 表全 1×1 →
+  ``merged`` 模式下总判为「简单」走结构（含合并的 PDF 数字表会误判）。OCR 路（html 解析）不受影响。
+  若需 PDF 路 also 区分，需在 ``_mapping`` 补合并格检测（后续）。
 - **表格进附件**：``split_attachments`` 可能把单表页拆到 attachment——本设计已对 main+attach 都截图。
 
 ## 7. 模块

@@ -747,6 +747,7 @@ def _attach_table_images_all(opts, image_dir, source, main_content, attach_segme
         image_dir=image_dir,
         dpi=float(opts.get("table_image_dpi", 300)),
         deskew=bool(opts.get("deskew", True)),
+        mode=str(opts.get("table_image_mode", "merged")),
     )
     try:
         attach_table_images(main_content, source, **kw)
@@ -774,6 +775,7 @@ def _normalize_options(options: Any) -> dict[str, Any]:
         "table_image",
         "table_image_dpi",
         "deskew",
+        "table_image_mode",
     ):
         val = getattr(options, key, None)
         if val is not None:

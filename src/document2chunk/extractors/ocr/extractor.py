@@ -149,7 +149,7 @@ def _attach_table_images_ocr(options, image_out_dir, data, main_content, attach_
     elif isinstance(options, dict):
         opts = options
     else:
-        opts = {k: getattr(options, k, None) for k in ("table_image", "table_image_dpi", "deskew")}
+        opts = {k: getattr(options, k, None) for k in ("table_image", "table_image_dpi", "deskew", "table_image_mode")}
     if not opts.get("table_image", True):
         return
     from document2chunk.extractors._table_image import attach_table_images
@@ -158,6 +158,7 @@ def _attach_table_images_ocr(options, image_out_dir, data, main_content, attach_
         image_dir=image_out_dir,
         dpi=float(opts.get("table_image_dpi", 300)),
         deskew=bool(opts.get("deskew", True)),
+        mode=str(opts.get("table_image_mode", "merged")),
     )
     try:
         attach_table_images(main_content, data, **kw)

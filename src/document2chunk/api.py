@@ -61,6 +61,8 @@ class ParseOptions(BaseModel):
     table_image: bool = True
     table_image_dpi: int = 300
     deskew: bool = True
+    # designs/009：merged（默认，仅含合并格的复杂表截图，简单表走结构）/ all（全部截图）。
+    table_image_mode: str = "merged"
 
 
 # ---------------------------------------------------------------------------

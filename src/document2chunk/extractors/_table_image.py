@@ -63,6 +63,20 @@ def _load_page_image(source: SourceLike, page_index: int, dpi: float):
     return Image.open(str(source)).convert("RGB")
 
 
+def _has_merged_cells(table) -> bool:
+    """表是否含合并单元格（任一格 ``colspan>1`` 或 ``rowspan>1``）。
+
+    用于简单/复杂表分流：简单表（全 1×1）走结构（markdown 表格），复杂表（有合并）截图。
+    依赖结构数据的 colspan/rowspan——OCR 路（html 解析）可靠；PDF 路（pdfplumber）当前
+    扁平化（全 1×1），故 PDF 表总判为「简单」（designs/009 §6 已知限制）。
+    """
+    for row in getattr(table, "rows", []) or []:
+        for cell in getattr(row, "cells", []) or []:
+            if getattr(cell, "colspan", 1) > 1 or getattr(cell, "rowspan", 1) > 1:
+                return True
+    return False
+
+
 def _deskew(img, max_angle: float = 5.0, step: float = 0.5, min_gain: float = 1.10):
     """轻量投影 deskew：找使水平投影方差最大的角度；提升不足（``min_gain``）则不旋转。
 
@@ -117,10 +131,13 @@ def attach_table_images(
     dpi: float = 300.0,
     deskew: bool = True,
     padding_pt: float = 6.0,
+    mode: str = "merged",
 ) -> int:
-    """遍历 ``blocks``，给每个有 ``page_index + bbox`` 的 :class:`TableNode` 截图、落盘、
-    挂 ``table_image_id``。返回处理的表数。
+    """遍历 ``blocks``，给符合条件的 :class:`TableNode` 截图、落盘、挂 ``table_image_id``。
+    返回处理的表数。
 
+    - ``mode="merged"``（默认）：**仅**含合并单元格的复杂表截图；简单表（全 1×1）保留结构
+      （markdown 表格）。``mode="all"``：所有表都截图。
     - 按 ``page_index`` 分组，每页渲染一次。
     - bbox 缩放到渲染像素（PDF ``×dpi/72``；image ``×1.0``）+ ``padding_pt`` 外扩（含表框线）。
     - 任何失败（渲染/裁剪/落盘异常、无 bbox、越界）静默跳过（TableNode 原样保留）。
@@ -131,6 +148,8 @@ def attach_table_images(
     for b in blocks:
         if not isinstance(b, TableNode):
             continue
+        if mode == "merged" and not _has_merged_cells(b):
+            continue  # 简单表 → 走结构（markdown 表格），不截图
         prov = getattr(b, "provenance", None)
         if prov is None or prov.page_index is None or not prov.bbox:
             continue

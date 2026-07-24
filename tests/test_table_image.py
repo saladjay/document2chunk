@@ -40,6 +40,18 @@ def _mktable(bbox=None, page=0, text="cell"):
     )
 
 
+def _mkmtable(bbox=None, page=0):
+    """含合并格的复杂表（一个 colspan=2 表头 + 数据行）。"""
+    h = TableCellNode(id="c1", colspan=2, blocks=[ParagraphNode(id="p1", text="H")])
+    a = TableCellNode(id="c2", blocks=[ParagraphNode(id="p2", text="a")])
+    b = TableCellNode(id="c3", blocks=[ParagraphNode(id="p3", text="b")])
+    return TableNode(
+        id="tm",
+        rows=[TableRowNode(id="r1", cells=[h]), TableRowNode(id="r2", cells=[a, b])],
+        provenance=Provenance(source_type=SourceType.PDF, page_index=page, bbox=bbox),
+    )
+
+
 def _synth_pdf(bbox_pts=(100, 100, 400, 300)):
     """合成 A4 PDF，在 bbox 处画灰底矩形 + 文字（便于裁剪校验）。返回 bytes。"""
     import fitz
@@ -71,7 +83,7 @@ def test_attach_pdf_point_bbox_scaled_crop():
     pdf = _synth_pdf(bbox)
     t = _mktable(bbox=list(bbox), page=0)
     with tempfile.TemporaryDirectory() as d:
-        n = attach_table_images([t], pdf, image_dir=d, dpi=300, deskew=False)
+        n = attach_table_images([t], pdf, image_dir=d, dpi=300, deskew=False, mode="all")
         assert n == 1
         fn = os.path.join(d, "table_p0_0.png")
         assert os.path.exists(fn)
@@ -87,7 +99,7 @@ def test_attach_padding_expands_crop():
     scale = 300 / 72
     with tempfile.TemporaryDirectory() as d:
         t = _mktable(bbox=list(bbox))
-        attach_table_images([t], pdf, image_dir=d, dpi=300, deskew=False, padding_pt=6)
+        attach_table_images([t], pdf, image_dir=d, dpi=300, deskew=False, padding_pt=6, mode="all")
         from PIL import Image
 
         w, h = Image.open(os.path.join(d, "table_p0_0.png")).size
@@ -112,7 +124,7 @@ def test_attach_image_source_pixel_bbox():
     try:
         t = _mktable(bbox=[50, 50, 350, 250])  # 已是像素
         with tempfile.TemporaryDirectory() as outdir:
-            n = attach_table_images([t], buf, image_dir=outdir, dpi=300, deskew=False)
+            n = attach_table_images([t], buf, image_dir=outdir, dpi=300, deskew=False, mode="all")
             assert n == 1 and getattr(t, "table_image_id", None) == "table_p0_0.png"
             assert _has_content(os.path.join(outdir, "table_p0_0.png"))
     finally:
@@ -127,7 +139,7 @@ def test_attach_skip_when_no_bbox():
     pdf = _synth_pdf()
     t = _mktable(bbox=None)  # 无 bbox
     with tempfile.TemporaryDirectory() as d:
-        n = attach_table_images([t], pdf, image_dir=d, deskew=False)
+        n = attach_table_images([t], pdf, image_dir=d, deskew=False, mode="all")
         assert n == 0
         assert not hasattr(t, "table_image_id") or getattr(t, "table_image_id", None) is None
     print("OK test_attach_skip_when_no_bbox")
@@ -147,9 +159,54 @@ def test_attach_render_failure_silent():
     t = _mktable(bbox=[100, 100, 200, 200], page=999)
     pdf = _synth_pdf()  # 仅 1 页
     with tempfile.TemporaryDirectory() as d:
-        n = attach_table_images([t], pdf, image_dir=d, deskew=False)  # 不应抛
+        n = attach_table_images([t], pdf, image_dir=d, deskew=False, mode="all")  # 不应抛
         assert n == 0
     print("OK test_attach_render_failure_silent")
+
+
+# ---------- 简单/复杂表分流（mode）----------
+
+
+def test_merged_mode_skips_simple_table():
+    pdf = _synth_pdf()
+    t = _mktable(bbox=[100, 100, 400, 300])  # 全 1×1 简单表
+    with tempfile.TemporaryDirectory() as d:
+        n = attach_table_images([t], pdf, image_dir=d, mode="merged", deskew=False)
+        assert n == 0  # 简单表不截图 → 走结构
+        assert getattr(t, "table_image_id", None) is None
+    print("OK test_merged_mode_skips_simple_table")
+
+
+def test_merged_mode_captures_complex_table():
+    pdf = _synth_pdf()
+    t = _mkmtable(bbox=[100, 100, 400, 300])  # 含 colspan=2
+    with tempfile.TemporaryDirectory() as d:
+        n = attach_table_images([t], pdf, image_dir=d, mode="merged", deskew=False)
+        assert n == 1  # 复杂表截图
+        assert getattr(t, "table_image_id", None) == "table_p0_0.png"
+    print("OK test_merged_mode_captures_complex_table")
+
+
+def test_all_mode_captures_simple_table():
+    pdf = _synth_pdf()
+    t = _mktable(bbox=[100, 100, 400, 300])  # 简单表
+    with tempfile.TemporaryDirectory() as d:
+        n = attach_table_images([t], pdf, image_dir=d, mode="all", deskew=False)
+        assert n == 1  # all 模式：简单表也截图
+        assert getattr(t, "table_image_id", None) == "table_p0_0.png"
+    print("OK test_all_mode_captures_simple_table")
+
+
+def test_merged_mode_splits_mixed_in_one_doc():
+    pdf = _synth_pdf()
+    simple = _mktable(bbox=[100, 100, 400, 300])
+    complex_ = _mkmtable(bbox=[100, 100, 400, 300])
+    with tempfile.TemporaryDirectory() as d:
+        n = attach_table_images([simple, complex_], pdf, image_dir=d, mode="merged", deskew=False)
+        assert n == 1  # 只复杂表
+        assert getattr(simple, "table_image_id", None) is None
+        assert getattr(complex_, "table_image_id", None) == "table_p0_0.png"
+    print("OK test_merged_mode_splits_mixed_in_one_doc")
 
 
 # ---------- _deskew ----------
@@ -221,7 +278,7 @@ def test_real_p19_snapshot():
     # p19 表格大致 bbox（PDF 点，约略——服务/版面给出的区域）；用一个覆盖表区的 bbox
     t = _mktable(bbox=[60, 60, 540, 400], page=19)
     with tempfile.TemporaryDirectory() as d:
-        n = attach_table_images([t], _REAL_PDF, image_dir=d, dpi=200, deskew=False)
+        n = attach_table_images([t], _REAL_PDF, image_dir=d, dpi=200, deskew=False, mode="all")
         assert n == 1
         fn = os.path.join(d, "table_p19_0.png")
         assert os.path.exists(fn) and _has_content(fn)
@@ -235,6 +292,10 @@ def main():
     test_attach_skip_when_no_bbox()
     test_attach_skip_non_table_blocks()
     test_attach_render_failure_silent()
+    test_merged_mode_skips_simple_table()
+    test_merged_mode_captures_complex_table()
+    test_all_mode_captures_simple_table()
+    test_merged_mode_splits_mixed_in_one_doc()
     test_deskew_blank_unchanged()
     test_deskew_tilted_text_improves_alignment()
     test_markdown_table_with_image_id()
