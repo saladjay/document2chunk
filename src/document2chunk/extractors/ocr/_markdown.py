@@ -81,9 +81,16 @@ def parse_markdown(md: str) -> List[Dict[str, Any]]:
                 continue
 
         # 纯 HTML 标签块（<div…>/</div>/<span…> 等，剥离标签后无正文）→ 丢弃
-        # OCR 服务的 <div style=…>…</div> 被空白行拆成独立块，闭/开标签漏网成段落
         if "<" in b and not re.sub(r"<[^>]+>", "", b).strip():
             continue
+
+        # 剥离布局包装标签（保留内部文本）：<div style=…>标题</div> → 标题
+        if "<div" in b or "</div>" in b or "<span" in b or "</span>" in b:
+            b = re.sub(r"</?div[^>]*>", "", b, flags=re.I)
+            b = re.sub(r"</?span[^>]*>", "", b, flags=re.I)
+            b = b.strip()
+            if not b:
+                continue
 
         m = _UL_RE.match(b)
         if m:

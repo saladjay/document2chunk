@@ -483,6 +483,8 @@ class PyMuPDFSpanExtractor:
 
         # xref → bytes 缓存（仅 image_dir 落盘时需要）
         save = image_dir is not None
+        if save:
+            Path(image_dir).mkdir(parents=True, exist_ok=True)
         xref_cache: dict[int, bytes] = {}
         xref_to_image_list = page.get_images(full=True) if save else []
         if save:
