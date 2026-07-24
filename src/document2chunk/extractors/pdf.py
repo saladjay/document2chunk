@@ -711,6 +711,10 @@ class PdfExtractor:
             with open(_os.path.join(str(self._debug_dir), "postprocess_log.json"), "w", encoding="utf-8") as f:
                 _json.dump(pp_log, f, ensure_ascii=False, indent=2)
 
+        # 9. 表格 → 高清截图（designs/009）：有 image_dir 且 table_image 时，给每张表
+        # 挂 table_image_id，markdown 优先渲染图片。逐 content（正文 + 附件）独立处理。
+        _attach_table_images_all(opts, image_dir, source, main_content, attach_segments)
+
         result = ExtractionResult(content=main_content, metadata=metadata, toc_entries=toc_entries or None)
         for seg in attach_segments:
             result.attachments.append(ExtractionResult(content=seg, metadata=self._metadata(
@@ -740,6 +744,28 @@ class PdfExtractor:
 # ============================================================
 
 
+def _attach_table_images_all(opts, image_dir, source, main_content, attach_segments):
+    """复杂表 → 高清截图（designs/009 §image 模式）：仅 ``table_complex_format="image"`` 且
+    有 ``image_dir`` 时给复杂表挂 ``table_image_id``。默认 html 模式不截图（block_markdown
+    自动把复杂表渲染成 HTML 表格）。失败静默不阻断抽取。"""
+    if not image_dir or opts.get("table_complex_format", "html") != "image":
+        return
+    from document2chunk.extractors._table_image import attach_table_images
+
+    kw = dict(
+        image_dir=image_dir,
+        dpi=float(opts.get("table_image_dpi", 300)),
+        deskew=bool(opts.get("deskew", True)),
+        mode="merged",  # 仅复杂表（含合并格）截图，简单表走管道表格
+    )
+    try:
+        attach_table_images(main_content, source, **kw)
+        for seg in attach_segments:
+            attach_table_images(seg, source, **kw)
+    except Exception:
+        pass
+
+
 def _normalize_options(options: Any) -> dict[str, Any]:
     """把 options（dict / 对象 / None）归一为 dict。"""
     if options is None:
@@ -755,6 +781,9 @@ def _normalize_options(options: Any) -> dict[str, Any]:
         "pages",
         "layout_jsonl",
         "debug_dir",
+        "table_image_dpi",
+        "deskew",
+        "table_complex_format",
     ):
         val = getattr(options, key, None)
         if val is not None:
