@@ -1,0 +1,29 @@
+# Document2Chunk HTTP API（/parse + /parse-pdf，Chai 复杂解析对接）
+# 部署到 128.23.67.112，OCR 走宿主 PaddleOCR 服务 :8000
+FROM python:3.12-slim
+
+WORKDIR /app
+
+# 系统依赖（PyMuPDF/pdfplumber 需要）
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    libglib2.0-0 libsm6 libxrender1 libxext6 libgl1 \
+    && rm -rf /var/lib/apt/lists/*
+
+# 源码
+COPY pyproject.toml README.md ./
+COPY src ./src
+COPY openspec/project.md ./openspec/project.md
+
+# 安装（全部 extras：pdf/ocr/docx/api/viz）
+RUN pip install --no-cache-dir ".[pdf,ocr,docx,api,viz]"
+
+# OCR 服务配置（宿主 PaddleOCR :8000；token 部署时注入）
+ENV DOCUMENT2CHUNK_OCR_ENDPOINT=http://host.docker.internal:8000 \
+    DOCUMENT2CHUNK_OCR_MODEL=vl \
+    DOCUMENT2CHUNK_OCR_TIMEOUT=300 \
+    PYTHONUNBUFFERED=1
+
+EXPOSE 8000
+
+# 启动 HTTP 服务（/parse + /parse-pdf）
+CMD ["python", "-m", "document2chunk", "serve", "--host", "0.0.0.0", "--port", "8000"]
