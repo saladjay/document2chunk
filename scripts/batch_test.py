@@ -76,7 +76,7 @@ def _parse_one(pdf: Path, out_dir: Path, do_viz: bool) -> dict:
     else:
         from document2chunk.extractors.pdf import PdfExtractor
 
-        result = PdfExtractor(debug_dir=str(inter_dir)).extract(pdf)
+        result = PdfExtractor(debug_dir=str(inter_dir), image_dir=str(sub / "images")).extract(pdf)
         st = SourceType.PDF
 
     doc = assemble(result)

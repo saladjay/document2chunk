@@ -25,9 +25,12 @@ from document2chunk.pipeline.base import PipelineContext
 _PARAGRAPH_BREAK_SPACING_RATIO = 1.5
 # 间距聚类步长（pt）——消除浮点噪声后取众数
 _SPACING_BUCKET = 0.1
-# 列表/编号标记开头（新段落/列表项，不与上一段合并）：1./2、/3) 、（一）、一、
-# (?!\d) 排除小数（1.5亿元）
-_LIST_MARKER_RE = re.compile(r"^(?:\d+[.、)](?!\d)|[（(][一二三四五六七八九十]+[）)]|[一二三四五六七八九十]+、)")
+# 列表/编号/条款标记开头（新段落，不与上一段合并）：1./2、/3) 、（一）、一、第X条/章/节
+# (?!\d) 排除小数（1.5亿元）；第X条 避免管理办法条款被过度合并（2025.8.29）
+_LIST_MARKER_RE = re.compile(
+    r"^(?:\d+[.、)](?!\d)|[（(][一二三四五六七八九十]+[）)]|[一二三四五六七八九十]+、"
+    r"|第[一二三四五六七八九十百千]+[条章节篇部])"
+)
 
 
 class MergeStage:

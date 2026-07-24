@@ -26,6 +26,13 @@ from document2chunk.pipeline.heading_scorer import (
 
 _SKIP_TYPES = {"table", "toc_title", "toc_entry", "list", "image"}
 
+# 纯日期行（落款日期/时间戳）——不判 heading（2019.9.17 把"2019年9月17日"误判标题）
+_DATE_SEP = r"[\-/．\.年]"   # 日期分隔符（- 转义避免 char range）
+_PURE_DATE_RE = re.compile(
+    rf"^\d{{4}}\s*{_DATE_SEP}\s*\d{{1,2}}\s*(?:{_DATE_SEP}\s*\d{{1,2}}\s*日?)?\s*$"
+    r"|^\d{4}\s*年\s*\d{1,2}\s*月\s*(\d{1,2}\s*日)?\s*$"
+)
+
 # 多信号评分权重
 _SCORE_SECTION_NUM_PURE = 0.65   # 纯标题（编号开头，无句号后正文）
 _SCORE_SECTION_NUM_MIXED = 0.20  # 编号+正文混合（弱信号）
@@ -86,6 +93,13 @@ class ClassificationStage:
         size = style.get("size", 0)
         text = (elem.get("text") or "").strip()
         is_body = font == body_font and abs(size - body_size) <= 0.5
+
+        # 纯日期/时间戳行（落款日期）→ 强制段落，不判标题
+        if _PURE_DATE_RE.match(text):
+            elem["type"] = "paragraph"
+            elem["level"] = None
+            scorer.skip("classification", "pure_date", note="纯日期行不判标题")
+            return
 
         # 信号 1：字号比值（非正文才看）
         font_level = None

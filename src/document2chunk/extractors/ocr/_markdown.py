@@ -13,7 +13,7 @@ from typing import Any, Dict, List
 _HEADING_RE = re.compile(r"^(#{1,6})\s+(.*)$", re.S)
 _IMAGE_LINE_RE = re.compile(r"^!\[([^\]]*)\]\(([^)]+)\)\s*$")
 _UL_RE = re.compile(r"^[-*]\s+(.*)$", re.S)
-_OL_RE = re.compile(r"^\d+[).]\s+(.*)$", re.S)
+_OL_RE = re.compile(r"^(\d+)[).]\s+(.*)$", re.S)
 _BLOCKMATH_RE = re.compile(r"^\$\$(.+)\$\$$", re.S)
 # HTML <img src="..."> —— OCR 服务把盖章/页眉渲染成 <div style=...><img .../></div>
 # 不转 image 元素会原样落入 paragraph 文本，输出 HTML（R5/R7）。src 即 images 字典 key。
@@ -80,6 +80,11 @@ def parse_markdown(md: str) -> List[Dict[str, Any]]:
                 elements.append({"kind": "image", "alt": alt, "ref": m.group(1)})
                 continue
 
+        # 纯 HTML 标签块（<div…>/</div>/<span…> 等，剥离标签后无正文）→ 丢弃
+        # OCR 服务的 <div style=…>…</div> 被空白行拆成独立块，闭/开标签漏网成段落
+        if "<" in b and not re.sub(r"<[^>]+>", "", b).strip():
+            continue
+
         m = _UL_RE.match(b)
         if m:
             if pending and pending["ordered"] is False:
@@ -91,11 +96,13 @@ def parse_markdown(md: str) -> List[Dict[str, Any]]:
 
         m = _OL_RE.match(b)
         if m:
+            # 保留原序号（issues4：避免 GFM 重编号丢原序号），item 文本含 "N. xxx"
+            item_txt = f"{m.group(1)}. {m.group(2).strip()}"
             if pending and pending["ordered"] is True:
-                pending["items"].append(m.group(1).strip())
+                pending["items"].append(item_txt)
             else:
                 flush()
-                pending = {"ordered": True, "items": [m.group(1).strip()]}
+                pending = {"ordered": True, "items": [item_txt]}
             continue
 
         flush()

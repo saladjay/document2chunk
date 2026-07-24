@@ -256,8 +256,11 @@ def filter_noise(
                     _log_add(section="filter_noise", block_id=bid, action="removed",
                              reason=f"repeat:{position}/{norm[:20]}")
 
-    # ── 步骤 3：页码序列（纯数字 1,2,3 + N/M 分数）──
-    candidates: List[Tuple[int, str, int]] = []  # (page, block_id, num_value)
+    # ── 步骤 3：页码（issues4 判据：底部/顶部带 + 宽度远小于上方文本 + 页码正则）──
+    # 页码 y 上方最接近的 bbox 宽度比页码大很多（页码窄），位置 70%-100% 或顶部 8%。
+    geo_w = {pg: w for pg, (w, _h) in page_geometry.items()}
+    pageno_ids: set = set()
+    candidates: List[Tuple[int, str, int]] = []  # 序列备用（宽度判据未命中时）
     for b in content:
         if b.id in noise_ids:
             continue
@@ -268,7 +271,6 @@ def filter_noise(
         max_y = page_max_y.get(pg, 0)
         if max_y <= 0:
             continue
-        # 页码位置：底部带（≥70%）或顶部带（<8%，HTML 版 PDF 常把页码放顶部）
         in_bottom = bb[3] >= max_y * _PAGE_NUM_BAND
         in_top = bb[1] < max_y * _HEADER_FOOTER_BAND[0]
         if not (in_bottom or in_top):
@@ -276,76 +278,51 @@ def filter_noise(
         text = (getattr(b, "text", "") or "").strip()
         if not _PAGE_NUM_RE.match(text):
             continue
-        # 小宽度：同行最大宽 × 50%（或独占一行）
         my_w = bb[2] - bb[0]
-        cy = (bb[1] + bb[3]) / 2
-        same_row_widths: List[float] = []
+        # 上方最近文本块的宽度（页码上方最接近的 bbox，30% 页高内）
+        above_w = 0.0
         for o in content:
-            if o.id == b.id:
-                continue
-            if _prov_page(o) != pg:
+            if o.id == b.id or _prov_page(o) != pg:
                 continue
             obb = _prov_bbox(o)
             if not obb or len(obb) < 4:
                 continue
-            if abs((obb[1] + obb[3]) / 2 - cy) <= 5:
+            if obb[3] <= bb[1] and obb[1] >= bb[1] - max_y * 0.3:
                 w = obb[2] - obb[0]
-                if w > 0:
-                    same_row_widths.append(w)
-        if same_row_widths and my_w > max(same_row_widths) * _PAGE_NUM_WIDTH_RATIO:
-            continue  # 不是同行较窄
+                if w > above_w:
+                    above_w = w
+        # 主判据：宽度 < 上方最大宽 × 50%（页码远窄于正文）→ 页码（无需序列）
+        if above_w > 0 and my_w < above_w * _PAGE_NUM_WIDTH_RATIO:
+            pageno_ids.add(b.id)
+            _log_add(section="filter_noise", block_id=b.id, action="removed",
+                     reason="page_number:width+band")
+            continue
+        # 极端底部兜底（y1≥95% + 窄 < 页宽 12%）
+        pw = geo_w.get(pg, 0)
+        if pw > 0 and bb[3] >= max_y * 0.95 and my_w < pw * 0.12:
+            pageno_ids.add(b.id)
+            _log_add(section="filter_noise", block_id=b.id, action="removed",
+                     reason="page_number:extreme_bottom")
+            continue
         m = re.search(r"\d+", text)
         if m:
             candidates.append((pg, b.id, int(m.group())))
 
-    confirmed: set = set()
+    # 序列确认（宽度/极端底部未命中时，跨页递增补判）
     if candidates:
-        # 按页去重（一页可能多个候选，取第一个）
         by_page: Dict[int, int] = {}
         for pg, bid, num in candidates:
             by_page.setdefault(pg, num)
-        nums = sorted(by_page.values())
-        for run in _find_increasing_runs(nums):
+        for run in _find_increasing_runs(sorted(by_page.values())):
             if len(run) >= _PAGE_NUM_MIN_HITS:
-                target_pages = {p for p, n in by_page.items() if n in run}
+                tpages = {p for p, n in by_page.items() if n in run}
                 for pg, bid, num in candidates:
-                    if pg in target_pages:
-                        confirmed.add(bid)
-        # 首页缺失补齐：与已确认在同底带 + 同款格式的也判
-        if confirmed:
-            confirmed_pages = {_prov_page(next(b for b in content if b.id == cid))
-                               for cid in confirmed}
-            for pg, bid, num in candidates:
-                if bid in confirmed:
-                    continue
-                # 同文档其他页有确认页码 → 本页同位置同款也判（页码常首页/末页缺失）
-                if confirmed_pages:
-                    confirmed.add(bid)
-            for bid in confirmed:
-                _log_add(section="filter_noise", block_id=bid, action="removed",
-                         reason="page_number:sequence")
+                    if pg in tpages:
+                        pageno_ids.add(bid)
+                        _log_add(section="filter_noise", block_id=bid, action="removed",
+                                 reason="page_number:sequence")
 
-        # 极端底部单一页码兜底（无跨页序列时）：y1 ≥ max_y*0.95 + 窄（< 页宽 12%）
-        # + 已过页码正则 → 页码。仅命中页脚边缘的页码格式文本，不盲删整个底带（避免 R9）。
-        geo_w = {pg: w for pg, (w, _h) in page_geometry.items()}
-        block_by_id = {b.id: b for b in content}
-        for pg, bid, num in candidates:
-            if bid in confirmed:
-                continue
-            blk = block_by_id.get(bid)
-            bb = _prov_bbox(blk) if blk else None
-            if not bb or len(bb) < 4:
-                continue
-            max_y = page_max_y.get(pg, 0)
-            pw = geo_w.get(pg, 0)
-            if max_y <= 0 or pw <= 0:
-                continue
-            if bb[3] >= max_y * 0.95 and (bb[2] - bb[0]) < pw * 0.12:
-                confirmed.add(bid)
-                _log_add(section="filter_noise", block_id=bid, action="removed",
-                         reason="page_number:extreme_bottom")
-
-    noise_ids |= confirmed
+    noise_ids |= pageno_ids
     return [b for b in content if b.id not in noise_ids]
 
 
