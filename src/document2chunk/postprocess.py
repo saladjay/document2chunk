@@ -24,7 +24,7 @@ import statistics
 from collections import Counter, defaultdict
 from typing import Any, Dict, List, Optional, Tuple
 
-from document2chunk.ir import BlockNode, DocumentMetadata, HeadingNode, ParagraphNode, TocEntry
+from document2chunk.ir import BlockNode, DocumentMetadata, HeadingNode, ParagraphNode, TableNode, TocEntry
 from document2chunk.pipeline.stages.merge import _LIST_MARKER_RE
 
 # ── 编号正则 ──
@@ -808,7 +808,68 @@ def postprocess(
         use_height_fallback=use_height_fallback, _log=_log,
     )
     main_content, attach_segments = split_attachments(blocks, page_geometry=page_geometry, _log=_log)
+    # 多页重复表头合并（按段：主文/各附件分别合并，避免跨段误并）
+    main_content = merge_split_tables(main_content, _log=_log)
+    attach_segments = [merge_split_tables(s, _log=_log) for s in attach_segments]
     return main_content, attach_segments
+
+
+def _first_row_texts(t: TableNode) -> Tuple[str, ...]:
+    """表格首行各单元格文本（表头指纹）。"""
+    rows = getattr(t, "rows", None) or []
+    if not rows:
+        return ()
+    cells = getattr(rows[0], "cells", None) or []
+    texts: List[str] = []
+    for c in cells:
+        blocks = getattr(c, "blocks", []) or []
+        texts.append("".join(getattr(b, "text", "") or "" for b in blocks).strip())
+    return tuple(texts)
+
+
+def merge_split_tables(
+    content: List[BlockNode],
+    *,
+    _log: Optional[List[dict]] = None,
+) -> List[BlockNode]:
+    """合并连续的、首行表头相同的表格（跨页重复表头，2023.9.13）。
+
+    长表跨页时每页重复表头 → 多个 TableNode 表头一致。合并：首表保留表头，
+    后续表跳过各自表头（rows[1:]）追加为数据行。
+    """
+    def _log_add(**kw):
+        if _log is not None:
+            _log.append(kw)
+
+    out: List[BlockNode] = []
+    i = 0
+    while i < len(content):
+        b = content[i]
+        if not isinstance(b, TableNode):
+            out.append(b)
+            i += 1
+            continue
+        hdr = _first_row_texts(b)
+        if hdr:  # 有表头才尝试合并
+            merged_rows = list(b.rows)
+            j = i + 1
+            while (
+                j < len(content)
+                and isinstance(content[j], TableNode)
+                and _first_row_texts(content[j]) == hdr
+            ):
+                merged_rows.extend(content[j].rows[1:])  # 跳过重复表头
+                j += 1
+            if j > i + 1:
+                b.rows = merged_rows
+                _log_add(section="merge_tables", block_id=getattr(b, "id", ""),
+                         action="merged", reason=f"合并 {j - i} 张同表头表，共 {len(merged_rows)} 行")
+            out.append(b)
+            i = j
+        else:
+            out.append(b)
+            i += 1
+    return out
 
 
 __all__ = [

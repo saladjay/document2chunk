@@ -10,6 +10,7 @@ from document2chunk.postprocess import (
     calibrate_levels,
     filter_noise,
     merge_cross_page,
+    merge_split_tables,
     postprocess,
     split_attachments,
 )
@@ -19,6 +20,9 @@ from document2chunk.ir import (
     ParagraphNode,
     Provenance,
     SourceType,
+    TableCellNode,
+    TableRowNode,
+    TableNode,
     TocEntry,
 )
 
@@ -322,6 +326,60 @@ def test_split_attachments_none():
     content = [H("一、章节", level=1), P("正文")]
     main, attach = split_attachments(content)
     assert attach == [] and len(main) == 2
+
+
+# ══════════════════════════════════════
+#  merge_split_tables —— 多页重复表头合并
+# ══════════════════════════════════════
+
+def _tbl(header, rows, tid):
+    """构造表格：header=[..], rows=[[..],[..]]。"""
+    def row(cells, is_header=False):
+        return TableRowNode(
+            id=f"r{tid}_{is_header}",
+            is_header=is_header,
+            cells=[TableCellNode(id=f"c{tid}_{i}", blocks=[ParagraphNode(id=f"p{tid}_{i}", text=c)])
+                   for i, c in enumerate(cells)],
+        )
+    all_rows = [row(header, is_header=True)] + [row(r) for r in rows]
+    return TableNode(id=tid, rows=all_rows)
+
+
+def test_merge_split_tables_same_header():
+    """连续同表头表 → 合并成一张（保留首表头 + 所有数据行）。"""
+    content = [
+        _tbl(["序号", "事项"], [["1", "甲"], ["2", "乙"]], "t1"),
+        _tbl(["序号", "事项"], [["3", "丙"], ["4", "丁"]], "t2"),
+        _tbl(["序号", "事项"], [["5", "戊"]], "t3"),
+    ]
+    out = merge_split_tables(content)
+    assert len(out) == 1, len(out)
+    # 1 表头 + 5 数据行
+    assert len(out[0].rows) == 6, len(out[0].rows)
+    # 表头只一次
+    assert out[0].rows[0].is_header
+    assert all(not r.is_header for r in out[0].rows[1:])
+
+
+def test_merge_split_tables_different_header():
+    """表头不同的表不合并。"""
+    content = [
+        _tbl(["序号", "事项"], [["1", "甲"]], "t1"),
+        _tbl(["A", "B"], [["x", "y"]], "t2"),
+    ]
+    out = merge_split_tables(content)
+    assert len(out) == 2
+
+
+def test_merge_split_tables_interrupted():
+    """中间夹段落 → 只合并相邻同表头段。"""
+    content = [
+        _tbl(["序号", "事项"], [["1", "甲"]], "t1"),
+        P("夹一段"),
+        _tbl(["序号", "事项"], [["2", "乙"]], "t2"),
+    ]
+    out = merge_split_tables(content)
+    assert len(out) == 3  # 不合并（被段落打断）
 
 
 # ══════════════════════════════════════
