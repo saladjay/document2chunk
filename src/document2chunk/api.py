@@ -13,6 +13,7 @@ extractor 跑通路由骨架。
 """
 
 import logging
+import os
 from pathlib import Path
 from typing import Any, Callable, Dict, Optional, Protocol, Union, runtime_checkable
 
@@ -370,6 +371,48 @@ def create_app():
             "document": json.loads(doc.model_dump_json(exclude_none=True)),
             "markdown": _to_markdown(doc),
         }
+
+    @app.post("/parse-pdf")
+    async def parse_pdf(request: Request):
+        """Chai 复杂解析对接：路径模式（file_path/output_dir/image_dir）/ zip 模式（文件→zip）。"""
+        from document2chunk import serve
+
+        ctype = request.headers.get("content-type", "")
+        if not ctype.startswith("multipart/"):
+            raise HTTPException(status_code=400, detail="需 multipart/form-data")
+        try:
+            form = await request.form()
+        except Exception as exc:  # noqa: BLE001
+            raise HTTPException(status_code=400, detail="multipart 解析失败（装 python-multipart）") from exc
+
+        demote = str(form.get("demote", "")).lower() == "true"
+        file_path = form.get("file_path")
+
+        if file_path:  # 路径模式
+            output_dir = form.get("output_dir")
+            image_dir = form.get("image_dir")
+            if not output_dir or not image_dir:
+                raise HTTPException(status_code=400, detail="路径模式需 file_path + output_dir + image_dir")
+            fp = str(file_path)
+            if not os.path.exists(fp):
+                raise HTTPException(status_code=400, detail=f"文件不存在: {fp}")
+            try:
+                serve.parse_to_files(fp, output_dir, image_dir, demote=demote)
+            except Exception as exc:  # noqa: BLE001
+                raise HTTPException(status_code=500, detail=f"{type(exc).__name__}: {exc}") from exc
+            return {"status": "ok"}
+
+        # zip 模式
+        upload = form.get("file") or form.get("document")
+        if upload is None:
+            raise HTTPException(status_code=400, detail="zip 模式缺少 file 字段")
+        data = await upload.read()
+        try:
+            zip_bytes = serve.parse_to_zip(data, getattr(upload, "filename", None), demote=demote)
+        except Exception as exc:  # noqa: BLE001
+            raise HTTPException(status_code=500, detail=f"{type(exc).__name__}: {exc}") from exc
+        from fastapi.responses import Response
+        return Response(content=zip_bytes, media_type="application/zip")
 
     return app
 
