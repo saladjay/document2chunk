@@ -50,11 +50,21 @@ def main(argv: Optional[List[str]] = None) -> int:
     ph = sub.add_parser("health", help="客户端：GET 部署服务 /health")
     ph.add_argument("--service", default=DEFAULT_SERVICE, help=f"服务地址（默认 {DEFAULT_SERVICE}）")
 
+    # cli（CLI 模式：被 Chai 调用，写 {outputDir}/result.md + images/，exit 0=成功）
+    pcl = sub.add_parser("cli", help="CLI 模式：解析文件 → 写 outputDir/result.md + images/")
+    pcl.add_argument("--input", required=True, help="原始文件绝对路径 {inputFile}")
+    pcl.add_argument("--output", required=True, help="产物目录绝对路径 {outputDir}")
+    pcl.add_argument("--images", default=None, help="图片目录绝对路径 {imageDir}（默认 {output}/images）")
+    pcl.add_argument("--base-url", default=os.environ.get("MINERU_BASE_URL", "http://127.0.0.1:9030"),
+                     help="MinerU 服务地址（CLI 模式本地解析用）")
+    pcl.add_argument("--demote", action="store_true", help="开启降误检")
+
     args = p.parse_args(argv)
     return {
         "convert": _cmd_convert,
         "parse": _cmd_parse,
         "health": _cmd_health,
+        "cli": _cmd_cli,
     }[args.cmd](args)
 
 
@@ -148,6 +158,21 @@ def _cmd_health(args) -> int:
         return 1
     print(f"HTTP {r.status_code}：{r.text}")
     return 0 if r.status_code == 200 else 1
+
+
+# ── cli（CLI 模式：被 Chai 调用，写 result.md + images/，exit 0=成功）──
+
+def _cmd_cli(args) -> int:
+    from . import convert_to_dir
+
+    try:
+        result = convert_to_dir(args.input, args.output, args.images,
+                                base_url=args.base_url, demote=args.demote)
+        print(f"已写入 {result}")
+        return 0
+    except Exception as e:  # noqa: BLE001
+        print(f"解析失败：{type(e).__name__}: {e}", file=sys.stderr)
+        return 1
 
 
 if __name__ == "__main__":

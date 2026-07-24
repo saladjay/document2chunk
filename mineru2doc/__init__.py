@@ -10,7 +10,7 @@ from .model import Block, MinerUDoc
 
 __version__ = "0.1.0"
 
-__all__ = ["Block", "MinerUDoc", "convert", "__version__"]
+__all__ = ["Block", "MinerUDoc", "convert", "convert_to_dir", "__version__"]
 
 
 def convert(
@@ -55,3 +55,38 @@ def convert(
             with open(output, "w", encoding="utf-8") as f:
                 f.write(md)
     return md
+
+
+def convert_to_dir(
+    input_file,
+    output_dir,
+    image_dir: str | None = None,
+    *,
+    base_url: str | None = None,
+    demote: bool = False,
+) -> str:
+    """读 ``input_file`` → 写 ``{output_dir}/result.md`` + 图片到 ``image_dir``。
+
+    图片默认落 ``output_dir/images``；``result.md`` 用相对路径 ``images/<name>`` 引用，
+    故 ``image_dir`` 应为 ``output_dir/images``（契约默认）。HTTP 路径模式 / CLI 模式共用。
+    返回 ``result.md`` 的绝对路径。
+    """
+    import os
+    import shutil
+    import tempfile
+
+    os.makedirs(output_dir, exist_ok=True)
+    if not image_dir:
+        image_dir = os.path.join(output_dir, "images")
+
+    with tempfile.TemporaryDirectory() as tmp:
+        md = convert(input_file, base_url=base_url, demote=demote, image_dir=tmp)
+        result_path = os.path.join(output_dir, "result.md")
+        with open(result_path, "w", encoding="utf-8") as f:
+            f.write(md)
+        src_imgs = os.path.join(tmp, "images")
+        if os.path.isdir(src_imgs):
+            os.makedirs(image_dir, exist_ok=True)
+            for fn in os.listdir(src_imgs):
+                shutil.copy2(os.path.join(src_imgs, fn), os.path.join(image_dir, fn))
+    return os.path.join(output_dir, "result.md")
