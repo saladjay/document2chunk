@@ -1,16 +1,8 @@
-"""span 管线编排引擎。
+"""span 管线编排引擎（designs/009 全文档架构）。
 
-迁移自 ``doc-paddle-ocr/pdf_parsers/pipeline/base.py``（依据 ``designs/003`` §2、§9），
-并修复四个反模式：
-
-1. ``_stage_counter`` 跨子管线手动接力 → 共享 :class:`_DebugTracer`（一处计数器，
-   所有子管线共用，NN 索引连续）。
-2. ``saved_body`` 快照/恢复补丁 → 删除。Phase 1 的 BodyAnalysis 已把 body_font/size
-   同步到全部 page_context，后续全局 stage 不再改写它们，恢复实为 no-op。
-3. :meth:`Pipeline._redistribute` 兜底读 ``_page_index`` → 改读 ``page_index``
-   （``run`` 注入的正是无下划线键）。
-4. :class:`SplitPipeline` 延迟 ``from ...stages import`` → 构造注入 :class:`SplitStages`
-   （解 DIP，引擎不依赖具体 Stage 类）。
+PDF 前端用线性 :class:`Pipeline`（5 stage），跨页/噪声/定级等文档级决策上移到
+:mod:`document2chunk.postprocess`。引擎按 ``is_global`` 自动分组连续 stage 为
+global/local 段交替执行。
 """
 
 from __future__ import annotations
@@ -89,9 +81,8 @@ class Stage(Protocol):
 class _DebugTracer:
     """共享的调试追踪器。
 
-    持有 ``debug_dir`` 与一个单调递增的 stage 计数器。``SplitPipeline`` 创建
-    一个实例并传给所有子 ``Pipeline``，从而获得跨子管线连续的 ``{NN}_{name}.json``
-    编号（替代旧 ``_stage_counter`` 手动接力）。``debug_dir=None`` 时零开销。
+    持有 ``debug_dir`` 与一个单调递增的 stage 计数器，为每个 stage 写
+    ``{NN}_{name}.json`` 中间结果。``debug_dir=None`` 时零开销。
     """
 
     def __init__(self, debug_dir: str | None = None):
@@ -184,7 +175,7 @@ class Pipeline:
         tracer: _DebugTracer | None = None,
     ):
         self._stages: list[Stage] = list(stages or [])
-        # 共享 tracer：外部传入（SplitPipeline 用）或按 debug_dir 新建
+        # 共享 tracer：外部传入或按 debug_dir 新建
         self._tracer = tracer if tracer is not None else _DebugTracer(debug_dir)
 
     def add(self, stage: Stage) -> "Pipeline":
@@ -340,156 +331,3 @@ class Pipeline:
                 result[0].append(elem)
         return result
 
-
-# ============================================================
-# SplitPipeline（目录页/正文页分流）
-# ============================================================
-
-
-@dataclass
-class SplitStages:
-    """SplitPipeline 所需的 9 个 Stage 实例（构造注入，解 DIP）。
-
-    Stage 实例无状态（LayoutFilter 仅缓存 layout_data），可被多个子管线复用。
-    由 :func:`document2chunk.pipeline.split_pipeline` 装配默认实现。
-    """
-
-    body_analysis: Stage
-    image_detection: Stage
-    classification: Stage
-    toc_detection: Stage
-    layout_filter: Stage
-    toc_analysis: Stage
-    merge: Stage
-    auto_level: Stage
-    page_number_detection: Stage
-
-
-class SplitPipeline:
-    """分流流水线：目录页与正文页分开处理。
-
-    执行流程（designs/003 §2.5，删 ``saved_body``）：
-      Phase 1 (全局): BodyAnalysis → 正文基准字体/字号
-      Phase 2 (局部): ImageDetection → Classification → TOCDetection
-      Phase 3: 分流（``type in {toc_entry,toc_title}`` 判目录页）
-      Phase 4 (目录页): LayoutFilter → PageNumberDetection
-      Phase 5 (正文页): LayoutFilter → TOCAnalysis(全页跑,取正文) →
-                        Merge → AutoLevel → PageNumberDetection
-      Phase 6: 按原始页码顺序合并输出
-
-    TOCAnalysis 是全局 stage，需同时看到 TOC 条目（建映射）和正文段落（应用映射），
-    因此在合并的所有页上运行，但只取正文页结果。
-    """
-
-    def __init__(
-        self,
-        *,
-        stages: SplitStages,
-        debug_dir: str | None = None,
-    ):
-        self._stages = stages
-        self._debug_dir = debug_dir
-
-    @property
-    def stage_names(self) -> list[str]:
-        return [
-            "body_analysis",
-            "image_detection",
-            "classification",
-            "toc_detection",
-            "layout_filter (toc)",
-            "layout_filter (content)",
-            "toc_analysis",
-            "merge",
-            "auto_level",
-            "page_number_detection",
-        ]
-
-    def run(
-        self,
-        pages: list[tuple[list[dict], PipelineContext]],
-    ) -> list[list[dict]]:
-        n_pages = len(pages)
-        page_elements = [elems for elems, _ in pages]
-        page_contexts = [ctx for _, ctx in pages]
-        s = self._stages
-        tracer = _DebugTracer(self._debug_dir)
-
-        def _pipe(stages: list[Stage], data) -> list[list[dict]]:
-            return Pipeline(stages, tracer=tracer).run(data)
-
-        # ========== Phase 1: BodyAnalysis (全局) ==========
-        pages_data = list(zip(page_elements, page_contexts))
-        page_elements = _pipe([s.body_analysis], pages_data)
-
-        # ========== Phase 2: ImageDetection + Classification + TOCDetection (局部) ==========
-        pages_data = list(zip(page_elements, page_contexts))
-        page_elements = _pipe(
-            [s.image_detection, s.classification, s.toc_detection], pages_data
-        )
-
-        # ========== Phase 3: 识别目录页 ==========
-        toc_indices: list[int] = []
-        content_indices: list[int] = []
-        for i, elems in enumerate(page_elements):
-            if any(e.get("type") in ("toc_entry", "toc_title") for e in elems):
-                toc_indices.append(i)
-            else:
-                content_indices.append(i)
-
-        has_toc = len(toc_indices) > 0
-        if has_toc:
-            _logger.info(
-                "目录页: %s；正文页: %d 页",
-                [page_contexts[i].page_index for i in toc_indices],
-                len(content_indices),
-            )
-
-        # 注：不保存 saved_body。Phase 1 已把 body_font/size 同步到全部
-        # page_context，后续全局 stage 不改写它们；max_heading_level 由
-        # AutoLevel（Phase 5c，仅正文页）写入并同步到正文 page_context，
-        # 目录页不需要该值。
-
-        # ========== Phase 4: 目录页处理 ==========
-        if toc_indices:
-            toc_pages_data = [
-                (page_elements[i], page_contexts[i]) for i in toc_indices
-            ]
-            toc_results = _pipe(
-                [s.layout_filter, s.page_number_detection], toc_pages_data
-            )
-            for idx, i in enumerate(toc_indices):
-                page_elements[i] = toc_results[idx]
-
-        # ========== Phase 5: 正文页处理 ==========
-        if content_indices:
-            # 5a: LayoutFilter 仅对正文页（TOC 页已在 Phase 4 处理）
-            content_pages_data = [
-                (page_elements[i], page_contexts[i]) for i in content_indices
-            ]
-            filtered_content = _pipe([s.layout_filter], content_pages_data)
-            for idx, i in enumerate(content_indices):
-                page_elements[i] = filtered_content[idx]
-
-            # 5b: TOCAnalysis 需看到所有页（TOC 页提供映射，正文页应用映射）
-            if has_toc:
-                all_pages_data = [
-                    (page_elements[i], page_contexts[i]) for i in range(n_pages)
-                ]
-                analyzed = _pipe([s.toc_analysis], all_pages_data)
-                # 只取正文页结果（TOCAnalysisStage 不修改 TOC 页元素）
-                for i in content_indices:
-                    page_elements[i] = analyzed[i]
-
-            # 5c: Merge + AutoLevel + PageNumberDetection 仅对正文页
-            content_pages_data2 = [
-                (page_elements[i], page_contexts[i]) for i in content_indices
-            ]
-            final_content = _pipe(
-                [s.merge, s.auto_level, s.page_number_detection],
-                content_pages_data2,
-            )
-            for idx, i in enumerate(content_indices):
-                page_elements[i] = final_content[idx]
-
-        return page_elements

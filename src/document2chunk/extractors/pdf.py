@@ -8,9 +8,9 @@
 - :class:`PyMuPDFSpanExtractor`：PDF → 行级 element + 表格（pdfplumber 优先、
   PyMuPDF 兜底双引擎）+ 图片信息。``_bbox_overlap``/``_sort_key``/``_clean_cell``
   已提到模块级（消除原 parser_pymupdf 的内嵌闭包反模式）。
-- :class:`PdfExtractor`：编排 span 提取 → :class:`SplitPipeline` → element→BlockNode
-  映射 → :class:`ExtractionResult`。``extract`` 不产出完整 LogicalDocument、不调
-  structure-builder（INTEGRATION §2）。
+- :class:`PdfExtractor`：编排 span 提取 → 线性 :class:`Pipeline`（5 stage）→
+  element→BlockNode 映射 → 全文档 postprocess → :class:`ExtractionResult`。
+  ``extract`` 不产出完整 LogicalDocument、不调 structure-builder（INTEGRATION §2）。
 - :func:`detect_pdf_type`：可编辑性检测（scanned/mixed → 路由到 ocr-extractor）。
 """
 
@@ -35,11 +35,9 @@ from document2chunk.ir import (
 )
 from document2chunk.pipeline import (
     PipelineContext,
-    SplitPipeline,
-    SplitStages,
-    default_split_stages,
+    Pipeline,
     load_layout_data,
-    split_pipeline,
+    pdf_pipeline,
 )
 from document2chunk.pipeline.config import IMAGE_FORMAT, IMAGE_MIN_AREA
 from document2chunk.pipeline.stages.layout_filter import layout_boxes_for_page
@@ -119,17 +117,26 @@ def _validate_table(
     bbox: list[float],
     rows: list,
     layout_boxes: list[tuple[str, list[float]]] | None,
+    page_w: float = 0.0,
+    page_h: float = 0.0,
 ) -> bool:
-    """判定检出的「表」是否为真表（保留）；否则降级为文字（designs/004 §3.2）。
+    """判定检出的「表」是否为真表（保留）；否则降级为文字（designs/004 §3.2 + R11）。
 
     保留条件（满足其一）：
     - layout-backed：存在 ``table`` 版面框与该 bbox 显著重叠；或
     - 启发式：行数 ≥ ``TABLE_MIN_ROWS``、列数 ≥ ``TABLE_MIN_COLS``、非全空。
+
+    拒绝条件：覆盖 >50% 页面且无 layout 确认 → HTML 版 PDF 整页布局误判为表格
+    （真表格极少覆盖过半首页，首页多为标题+正文）。
     """
     if layout_boxes:
         for label, lbox in layout_boxes:
             if label == "table" and _bbox_overlap(bbox, lbox, 0.3):
                 return True
+    if page_w and page_h and len(bbox) >= 4:
+        coverage = ((bbox[2] - bbox[0]) * (bbox[3] - bbox[1])) / (page_w * page_h)
+        if coverage > 0.5:
+            return False  # 整页布局误判（HTML 版 PDF 通病），降级为文字
     if rows and len(rows) >= TABLE_MIN_ROWS:
         max_cols = max((len(r or []) for r in rows), default=0)
         if max_cols >= TABLE_MIN_COLS and any(
@@ -296,10 +303,11 @@ class PyMuPDFSpanExtractor:
         """
         elements: list[dict] = []
         order_index = 0
+        pw, ph = page.rect.width, page.rect.height  # R11：整页表格覆盖判据
 
         # 1. pdfplumber 表格（primary）— 校验后保留
         for bbox, rows in pdfplumber_tables:
-            if not _validate_table(bbox, rows, layout_boxes):
+            if not _validate_table(bbox, rows, layout_boxes, pw, ph):
                 continue  # 降级：不当表，其文字正常提取
             markdown = _table_to_markdown(rows)
             elements.append(
@@ -315,7 +323,7 @@ class PyMuPDFSpanExtractor:
                     for table in tables.tables:
                         rows = table.extract() or []
                         tbbox = list(table.bbox)
-                        if not _validate_table(tbbox, rows, layout_boxes):
+                        if not _validate_table(tbbox, rows, layout_boxes, pw, ph):
                             continue  # 降级
                         markdown = _table_to_markdown(rows) or ""
                         elements.append(
@@ -475,6 +483,8 @@ class PyMuPDFSpanExtractor:
 
         # xref → bytes 缓存（仅 image_dir 落盘时需要）
         save = image_dir is not None
+        if save:
+            Path(image_dir).mkdir(parents=True, exist_ok=True)
         xref_cache: dict[int, bytes] = {}
         xref_to_image_list = page.get_images(full=True) if save else []
         if save:
@@ -557,8 +567,9 @@ class PyMuPDFSpanExtractor:
 class PdfExtractor:
     """可编辑 PDF → ExtractionResult。
 
-    编排：PyMuPDFSpanExtractor 提取 → SplitPipeline 处理 → element→BlockNode 映射。
-    scanned/mixed PDF 不在本 extractor 范围（fast-fail，路由到 ocr-extractor）。
+    编排：PyMuPDFSpanExtractor 提取 → 线性 Pipeline（5 stage）→ element→BlockNode 映射
+    → 全文档 postprocess（跨页合并/噪声/定级/附件）。scanned/mixed 不在本 extractor
+    范围（fast-fail，路由到 ocr-extractor）。
     """
 
     source_type: SourceType = SourceType.PDF
@@ -566,9 +577,8 @@ class PdfExtractor:
     def __init__(
         self,
         *,
-        pipeline: SplitPipeline | None = None,
+        pipeline: Pipeline | None = None,
         layout_jsonl: str | Path | None = None,
-        split_stages: SplitStages | None = None,
         extract_images: bool = True,
         image_dir: str | Path | None = None,
         debug_dir: str | Path | None = None,
@@ -576,9 +586,8 @@ class PdfExtractor:
     ):
         """
         Args:
-            pipeline: 自定义 SplitPipeline；None 则用 :func:`split_pipeline` 默认。
+            pipeline: 自定义 Pipeline；None 则用 :func:`pdf_pipeline` 默认（5 stage）。
             layout_jsonl: 版面分析 JSONL 路径（PaddleOCR LayoutDetection 输出）。
-            split_stages: 自定义 SplitStages（仅 pipeline 为 None 时生效）。
             extract_images: 是否提取图片信息。
             image_dir: 图片落盘目录（None 不落盘）。
             debug_dir: 管线调试目录（每 stage 写 {NN}_{name}.json）。
@@ -587,10 +596,8 @@ class PdfExtractor:
         if pipeline is not None:
             self._pipeline = pipeline
         else:
-            self._pipeline = SplitPipeline(
-                stages=split_stages or default_split_stages(
-                    str(layout_jsonl) if layout_jsonl else None
-                ),
+            self._pipeline = pdf_pipeline(
+                str(layout_jsonl) if layout_jsonl else None,
                 debug_dir=str(debug_dir) if debug_dir else None,
             )
         self._layout_jsonl = layout_jsonl
@@ -680,23 +687,24 @@ class PdfExtractor:
             custom["body_font"] = body_ctx.body_font
         if body_ctx.body_font_size is not None:
             custom["body_font_size"] = body_ctx.body_font_size
-        if body_ctx.max_heading_level:
-            custom["max_heading_level"] = body_ctx.max_heading_level
 
         metadata = self._metadata(source, page_count=len(raw_pages), custom=custom)
 
-        # 8. 共享后处理（自适应标题定级 + join + 过滤 + 附件拆分，designs/007）
-        from document2chunk.heading import calibrate, join_cross_page_paragraphs
-        from document2chunk.heading import filter_cross_page_noise, split_attachments
-        page_widths = {}
-        for elems, ctx in pages_data:
-            if hasattr(ctx, "page_width") and hasattr(ctx, "page_index"):
-                page_widths[ctx.page_index] = ctx.page_width
+        # 8. 全文档后处理（两路共用：噪声过滤 + 跨页合并 + 标题定级 + 附件拆分，designs/009）
+        from document2chunk.postprocess import postprocess
+        page_geometry = {}
+        for _elems, ctx in pages_data:
+            if hasattr(ctx, "page_width") and hasattr(ctx, "page_height") and hasattr(ctx, "page_index"):
+                page_geometry[ctx.page_index] = (ctx.page_width, ctx.page_height)
         pp_log: list = []
-        blocks = calibrate(blocks, metadata, use_height_fallback=False, page_widths=page_widths, _log=pp_log)
-        blocks = join_cross_page_paragraphs(blocks, _log=pp_log)
-        blocks = filter_cross_page_noise(blocks, _log=pp_log)
-        main_content, attach_segments = split_attachments(blocks, _log=pp_log)
+        main_content, attach_segments = postprocess(
+            blocks, metadata,
+            toc_entries=toc_entries,
+            page_geometry=page_geometry,
+            layout_data=layout_data,
+            use_height_fallback=False,  # edited-PDF：居中 + 高度比（DOC_TITLE_EDITED_RATIO）
+            _log=pp_log,
+        )
         if self._debug_dir:
             import json as _json, os as _os
             _os.makedirs(str(self._debug_dir), exist_ok=True)

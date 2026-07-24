@@ -57,11 +57,15 @@ def assemble(result: ExtractionResult, *, keep_toc: bool = False) -> LogicalDocu
             )
         )
 
+    # 4. 递归组装附件（postprocess.split_attachments 拆出的段，designs/007 R6/009）
+    attachments = [assemble(att, keep_toc=keep_toc) for att in result.attachments]
+
     return LogicalDocument(
         metadata=result.metadata,
         content=content,
         section_tree=section_tree,
         block_to_section=block_to_section,
+        attachments=attachments,
     )
 
 

@@ -9,8 +9,7 @@ from document2chunk.extractors.ocr._chunker import iter_pages, page_count
 from document2chunk.extractors.ocr._client import OcrServiceClient
 from document2chunk.extractors.ocr._config import OcrConfig
 from document2chunk.extractors.ocr._exceptions import OcrServiceError
-from document2chunk.heading import calibrate, filter_cross_page_noise, join_cross_page_paragraphs
-from document2chunk.heading import split_attachments
+from document2chunk.postprocess import postprocess
 from document2chunk.extractors.ocr._mapping import _Idc, build_page_blocks
 from document2chunk.ir import DocumentMetadata, ExtractionResult, SourceType
 
@@ -79,8 +78,10 @@ class OcrExtractor:
         idc = _Idc()
         img_counter = [0]
         blocks = []
+        page_geometry: dict = {}
 
         for page_index, media, fname, pw, ph in iter_pages(data, source_file or "source"):
+            page_geometry[page_index] = (pw, ph)
             resp = self._client.parse(media, fname, model=model)
             if dump_dir:
                 _dump_response(dump_dir, page_index, resp)
@@ -118,12 +119,15 @@ class OcrExtractor:
             page_count=pcount,
             generator="paddleocr-service",
         )
-        # 文档级标题自适应定级 + 跨页 join + 页眉过滤 + 附件拆分（designs/007）
+        # 全文档后处理（两路共用：噪声过滤 + 跨页合并 + 标题定级 + 附件拆分，designs/009）
         pp_log: list = []
-        blocks = calibrate(blocks, metadata, _log=pp_log)
-        blocks = join_cross_page_paragraphs(blocks, _log=pp_log)
-        blocks = filter_cross_page_noise(blocks, _log=pp_log)
-        main_content, attach_segments = split_attachments(blocks, _log=pp_log)
+        main_content, attach_segments = postprocess(
+            blocks, metadata,
+            toc_entries=None,
+            page_geometry=page_geometry,
+            use_height_fallback=True,  # OCR：高度比（DOC_TITLE_RATIO）
+            _log=pp_log,
+        )
         # 中间过程日志
         if dump_dir:
             import json as _json, os as _os

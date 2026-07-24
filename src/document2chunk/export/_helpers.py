@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import re
+
 from document2chunk.ir import (
     BlockNode,
     FormulaNode,
@@ -86,9 +88,15 @@ def table_markdown(table: TableNode) -> str:
 
 def list_markdown(lst: ListNode) -> str:
     lines = []
-    for item in lst.items:
+    for n, item in enumerate(lst.items, 1):
         indent = "  " * item.level
-        marker = "1. " if lst.ordered else "- "
         text = " ".join(block_text(b) for b in item.blocks).strip()
-        lines.append(f"{indent}{marker}{text}")
+        if lst.ordered:
+            # 保留原序号：文本已含数字标记（OCR "1. xxx"）→ 原样；否则 GFM 序号
+            if re.match(r"^\d+[.、)]", text):
+                lines.append(f"{indent}{text}")
+            else:
+                lines.append(f"{indent}{n}. {text}")
+        else:
+            lines.append(f"{indent}- {text}")
     return "\n".join(lines)

@@ -25,7 +25,13 @@ from document2chunk.pipeline.heading_scorer import (
 )
 
 _SKIP_TYPES = {"table", "toc_title", "toc_entry", "list", "image"}
-_OCR_TITLE_SCORE = 0.50
+
+# 纯日期行（落款日期/时间戳）——不判 heading（2019.9.17 把"2019年9月17日"误判标题）
+_DATE_SEP = r"[\-/．\.年]"   # 日期分隔符（- 转义避免 char range）
+_PURE_DATE_RE = re.compile(
+    rf"^\d{{4}}\s*{_DATE_SEP}\s*\d{{1,2}}\s*(?:{_DATE_SEP}\s*\d{{1,2}}\s*日?)?\s*$"
+    r"|^\d{4}\s*年\s*\d{1,2}\s*月\s*(\d{1,2}\s*日)?\s*$"
+)
 
 # 多信号评分权重
 _SCORE_SECTION_NUM_PURE = 0.65   # 纯标题（编号开头，无句号后正文）
@@ -51,7 +57,6 @@ class ClassificationStage:
     def process(self, elements: list[dict], ctx: PipelineContext) -> list[dict]:
         body_font = ctx.body_font or "Unknown"
         body_size = ctx.body_font_size or 12.0
-        is_ocr = ctx.source_type == "ocr"
         page_w = getattr(ctx, "page_width", 0) or 0
         page_h = getattr(ctx, "page_height", 0) or 0
 
@@ -62,13 +67,10 @@ class ClassificationStage:
             style = elem.get("style", {})
             scorer = HeadingScoreAccumulator(elem)
 
-            if is_ocr:
-                self._classify_ocr(elem, style, scorer)
-            else:
-                self._classify_pdf(
-                    elem, style, body_font, body_size, scorer,
-                    elements, page_w, page_h,
-                )
+            self._classify_pdf(
+                elem, style, body_font, body_size, scorer,
+                elements, page_w, page_h,
+            )
 
             scorer.apply_to(elem)
 
@@ -91,6 +93,13 @@ class ClassificationStage:
         size = style.get("size", 0)
         text = (elem.get("text") or "").strip()
         is_body = font == body_font and abs(size - body_size) <= 0.5
+
+        # 纯日期/时间戳行（落款日期）→ 强制段落，不判标题
+        if _PURE_DATE_RE.match(text):
+            elem["type"] = "paragraph"
+            elem["level"] = None
+            scorer.skip("classification", "pure_date", note="纯日期行不判标题")
+            return
 
         # 信号 1：字号比值（非正文才看）
         font_level = None
@@ -154,25 +163,6 @@ class ClassificationStage:
                 lvl = 1
             elem["type"] = "title" if lvl == 1 else "heading"
             elem["level"] = lvl
-        else:
-            elem["type"] = "paragraph"
-            elem["level"] = None
-
-    # ── OCR：版面 title 标签主信号（不变）──
-
-    @staticmethod
-    def _classify_ocr(elem: dict, style: dict, scorer: HeadingScoreAccumulator) -> None:
-        layout_label = style.get("layout_label")
-        if layout_label == "title":
-            elem["type"] = "heading"
-            elem["level"] = None
-            scorer.add_score(
-                stage="classification",
-                rule="ocr_layout_title",
-                score=_OCR_TITLE_SCORE,
-                action="assign",
-                note="版面 title 标签（主信号）",
-            )
         else:
             elem["type"] = "paragraph"
             elem["level"] = None
