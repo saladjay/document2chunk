@@ -391,10 +391,33 @@ def create_app():
         from fastapi.responses import Response
         return Response(content=zip_bytes, media_type="application/zip")
 
-    # /parse 与 /parse-pdf 同契约（Chai 对接，与 mineru2doc :9300/parse 一致）
+    # /parse → 代理到 mineru2doc 适配器（MinerU 引擎，:9300）
+    # /parse-pdf → d2c 引擎（_chai_parse）。两路径同 Chai 契约，不同引擎。
+    MINERU2DOC_URL = os.environ.get("MINERU2DOC_URL", "http://host.docker.internal:9300").rstrip("/")
+
     @app.post("/parse")
     async def parse_file(request: Request):
-        return await _chai_parse(request)
+        """代理到 mineru2doc（MinerU 引擎）。透传 multipart，回传 zip/{status:ok}。"""
+        import httpx
+        from fastapi.responses import Response
+
+        body = await request.body()
+        fwd_headers = {
+            k: v for k, v in request.headers.items()
+            if k.lower() not in ("host", "content-length", "transfer-encoding")
+        }
+        try:
+            async with httpx.AsyncClient(timeout=600.0) as client:
+                resp = await client.post(
+                    f"{MINERU2DOC_URL}/parse", content=body, headers=fwd_headers
+                )
+        except httpx.HTTPError as exc:
+            raise HTTPException(status_code=502, detail=f"mineru2doc 不可达: {exc}") from exc
+        return Response(
+            content=resp.content,
+            status_code=resp.status_code,
+            media_type=resp.headers.get("content-type", ""),
+        )
 
     @app.post("/parse-pdf")
     async def parse_pdf(request: Request):
