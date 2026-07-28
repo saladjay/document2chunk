@@ -182,13 +182,23 @@ def filter_noise(
 
     page_geometry = page_geometry or {}
 
-    # 每页 max_y（用于相对位置判定）
+    # 每页 max_y（内容最低部，用于兜底）
     page_max_y: Dict[int, float] = defaultdict(float)
     for b in content:
         bb = _prov_bbox(b)
         pg = _prov_page(b)
         if bb and len(bb) >= 4 and pg is not None:
             page_max_y[pg] = max(page_max_y[pg], bb[3])
+
+    # 页高（优先 page_geometry 真实页高；无则退化为内容 max_y）
+    _page_h: Dict[int, float] = {}
+    for pg, (_w, h) in page_geometry.items():
+        if h and h > 0:
+            _page_h[pg] = h
+
+    def _band_max_y(pg: int) -> float:
+        """带判定用的页面高度：page_geometry 真实页高 > 内容 max_y。"""
+        return _page_h.get(pg) or page_max_y.get(pg, 0)
 
     noise_ids: set = set()
 
@@ -232,7 +242,7 @@ def filter_noise(
         bb = _prov_bbox(b)
         if pg is None or not bb or len(bb) < 4:
             continue
-        max_y = page_max_y.get(pg, 0)
+        max_y = _band_max_y(pg)
         if max_y <= 0:
             continue
         text = (getattr(b, "text", "") or "").strip()
@@ -268,7 +278,7 @@ def filter_noise(
         bb = _prov_bbox(b)
         if pg is None or not bb or len(bb) < 4:
             continue
-        max_y = page_max_y.get(pg, 0)
+        max_y = _band_max_y(pg)
         if max_y <= 0:
             continue
         in_bottom = bb[3] >= max_y * _PAGE_NUM_BAND

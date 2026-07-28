@@ -148,7 +148,7 @@ class ImageDetectionStage:
             if matched:
                 image_id = matched["image_id"]
                 if image_id not in used_image_ids:
-                    result_elements.append(self._placeholder(matched, elem.get("order_index", 0)))
+                    result_elements.append(self._placeholder(matched, elem.get("order_index", 0), ctx.page_index))
                     used_image_ids.add(image_id)
                     placeholder_count += 1
                 # 跳过图内文本
@@ -158,7 +158,7 @@ class ImageDetectionStage:
         # Fallback：未匹配到文本的 figure 仍出占位符（放末尾）
         for img_bbox in figure_images:
             if img_bbox["image_id"] not in used_image_ids:
-                result_elements.append(self._placeholder(img_bbox, 9999))
+                result_elements.append(self._placeholder(img_bbox, 9999, ctx.page_index))
                 used_image_ids.add(img_bbox["image_id"])
                 placeholder_count += 1
 
@@ -168,12 +168,13 @@ class ImageDetectionStage:
         return self._merge_overlapping_images(result_elements)
 
     @staticmethod
-    def _placeholder(img_bbox: dict, order_index) -> dict:
+    def _placeholder(img_bbox: dict, order_index, page_index: int = 0) -> dict:
         return {
             "type": "image",
             "text": img_bbox.get("image_id", ""),
             "bbox": [round(v, 2) for v in (img_bbox["x0"], img_bbox["y0"], img_bbox["x1"], img_bbox["y1"])],
             "order_index": order_index,
+            "page_index": page_index,
         }
 
     @staticmethod

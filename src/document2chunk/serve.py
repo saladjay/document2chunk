@@ -24,12 +24,28 @@ _DEMOTE_MAX_HEADING_LEN = 60  # demote：标题文本超此且以句号结尾 �
 
 
 def _extract_with_images(source, st: SourceType, image_dir: Optional[str]):
-    """按源类型用对应 extractor 提取（图片落 image_dir）。"""
+    """按源类型用对应 extractor 提取（图片落 image_dir）。返回 (result, page_geometry)。"""
     if st == SourceType.OCR:
         from document2chunk.extractors.ocr import OcrExtractor
-        return OcrExtractor().extract(source, image_out_dir=image_dir)
+        from document2chunk.extractors.ocr._chunker import iter_pages, page_count
+        data = source if isinstance(source, (bytes, bytearray)) else open(source, "rb").read()
+        pc = page_count(data)
+        geo = {}
+        for pi, _media, _fname, pw, ph in iter_pages(data, "src"):
+            geo[pi] = (pw, ph)
+            if pi + 1 >= pc:
+                break
+        return OcrExtractor().extract(source, image_out_dir=image_dir), geo
     from document2chunk.extractors.pdf import PdfExtractor
-    return PdfExtractor(image_dir=image_dir).extract(source)
+    # PDF 页面尺寸
+    import pymupdf as _fitz
+    if isinstance(source, (bytes, bytearray)):
+        _doc = _fitz.open(stream=bytes(source), filetype="pdf")
+    else:
+        _doc = _fitz.open(str(source))
+    geo = {i: (_doc[i].rect.width, _doc[i].rect.height) for i in range(len(_doc))}
+    _doc.close()
+    return PdfExtractor(image_dir=image_dir).extract(source), geo
 
 
 def _walk_blocks(doc: LogicalDocument):
@@ -80,6 +96,21 @@ def _doc_markdown(doc: LogicalDocument) -> str:
     return "".join(parts)
 
 
+def _run_postprocess(result, page_geometry=None):
+    """对 ExtractionResult 跑全文档后处理（filter_noise → merge → calibrate → split）。"""
+    from document2chunk.postprocess import postprocess as _postprocess
+
+    main, attach_segs = _postprocess(
+        result.content, result.metadata,
+        toc_entries=result.toc_entries,
+        page_geometry=page_geometry,
+    )
+    result.content = main
+    from document2chunk.ir import ExtractionResult
+    for seg in attach_segs:
+        result.attachments.append(ExtractionResult(content=seg, metadata=result.metadata))
+
+
 def parse_to_files(
     source: Union[str, Path, bytes],
     output_dir: Union[str, Path],
@@ -97,7 +128,8 @@ def parse_to_files(
     image_dir.mkdir(parents=True, exist_ok=True)
 
     st = _route_source_type(source, source_type) if source_type else _pdf_kind(source)
-    result = _extract_with_images(source, st, str(image_dir))
+    result, geo = _extract_with_images(source, st, str(image_dir))
+    _run_postprocess(result, geo)  # 全文档后处理（filter/merge/calibrate/split）
     doc = _assemble(result, False)
 
     name = _source_name(source)
@@ -128,7 +160,8 @@ def parse_to_zip(
     try:
         image_dir = tmp / image_dir_name
         st = _route_source_type(data, source_type) if source_type else _pdf_kind(data)
-        result = _extract_with_images(data, st, str(image_dir))
+        result, geo = _extract_with_images(data, st, str(image_dir))
+        _run_postprocess(result, geo)  # 全文档后处理
         doc = _assemble(result, False)
         if filename and doc.metadata.source_file is None:
             doc.metadata.source_file = filename
