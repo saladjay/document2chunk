@@ -16,7 +16,6 @@ from document2chunk.ir import (
     ListNode,
     ParagraphNode,
     SourceType,
-    TocEntry,
 )
 
 
@@ -94,12 +93,14 @@ class DocxExtractor:
         # 统一后处理（第三路汇合，designs/009）：DOCX 无页几何，页相关步骤天然 no-op；
         # 收益是 calibrate_levels（doc_title 字号比 + 栈式定级）与 split_attachments。
         from document2chunk.postprocess import postprocess
+        pp_log: list = []
         main_content, attach_segments = postprocess(
             blocks, metadata,
             toc_entries=toc_entries if toc_entries else None,
             page_geometry=None,
             use_height_fallback=False,
             body_font_size=_body_font_size(blocks),
+            _log=pp_log,
         )
 
         result = ExtractionResult(
@@ -110,4 +111,16 @@ class DocxExtractor:
         for seg in attach_segments:
             result.attachments.append(ExtractionResult(content=seg, metadata=_meta(
                 custom={"is_attachment": True})))
+
+        debug_dir = None
+        if isinstance(options, dict):
+            debug_dir = options.get("debug_dir")
+        else:
+            debug_dir = getattr(options, "debug_dir", None)
+        if debug_dir:
+            import json as _json
+            import os as _os
+            _os.makedirs(str(debug_dir), exist_ok=True)
+            with open(_os.path.join(str(debug_dir), "postprocess_log.json"), "w", encoding="utf-8") as f:
+                _json.dump(pp_log, f, ensure_ascii=False, indent=2)
         return result

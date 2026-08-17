@@ -88,7 +88,7 @@ def _doc():
 def test_extract_basic():
     result = DocxExtractor().extract(_doc())
     assert result.metadata.source_type == SourceType.DOCX
-    # H1, P, H1(pStyle), Table, List
+    # H1, H(doc_title提升), H(pStyle), Table, List
     assert len(result.content) == 5
     assert isinstance(result.content[0], HeadingNode)
     assert isinstance(result.content[3], TableNode)
@@ -105,8 +105,9 @@ def test_heading_levels():
 
 def test_run_style_resolved():
     result = DocxExtractor().extract(_doc())
-    para: ParagraphNode = result.content[1]
-    run = para.runs[0]
+    # content[1]「粗体14pt」被提升为 doc_title HeadingNode，runs 仍保留 run 样式
+    heading = result.content[1]
+    run = heading.runs[0]
     assert run.text == "粗体14pt"
     assert run.style.bold is True
     assert run.style.font_size == 14.0  # sz val=28 → 14pt
@@ -142,8 +143,10 @@ def test_assemble_and_markdown():
     result = DocxExtractor().extract(_doc())
     doc = assemble(result)
     md = to_markdown(doc)
-    assert "# 第一章" in md
-    assert "# 标题" in md
+    lines = md.splitlines()
+    assert "## 第一章" in lines
+    assert "# 粗体14pt" in lines   # 提升为 doc_title → H1
+    assert "## 标题" in lines
     assert "| A | B |" in md
     assert "- 项一" in md
 
@@ -210,6 +213,18 @@ def test_extractor_postprocess_wired():
     levels = [(b.level, b.text) for b in result.content if isinstance(b, HeadingNode)]
     assert (2, "一、总体要求") in levels
     assert (2, "二、重点工作") in levels
+
+
+def test_debug_dir_postprocess_log(tmp_path):
+    """options.debug_dir 时落 postprocess_log.json（spec §3，pdf.py 同模式）。"""
+    result = DocxExtractor().extract(
+        make_docx(DOC_FULL, STYLES), options={"debug_dir": str(tmp_path)}
+    )
+    import json
+    log_file = tmp_path / "postprocess_log.json"
+    assert log_file.exists()
+    entries = json.loads(log_file.read_text(encoding="utf-8"))
+    assert isinstance(entries, list) and entries  # 非空：calibrate 等决策有记录
 
 
 def test_extractor_regression_basic():

@@ -438,7 +438,8 @@ def test_filter_noise_no_provenance_noop():
 
 
 def test_merge_cross_page_no_provenance_noop():
-    """无页码的块不做跨页续接（DOCX 天然单流），多行标题合并仍可工作。"""
+    """无页码的块不做跨页续接，也不做多行标题合并（DOCX 无页概念，
+    相邻独立标题不应被拼坏——spec §4.5；PDF/OCR 有 provenance 不受影响）。"""
     blocks = [
         H("某标题前半", level=1),
         H("某标题后半", level=1),
@@ -447,12 +448,10 @@ def test_merge_cross_page_no_provenance_noop():
     for b in blocks:
         b.provenance = None
     out = merge_cross_page(blocks)
-    # 段落未被拼接
     texts = [getattr(b, "text", "") for b in out]
-    assert "正文内容比较长的一段时间" in texts
-    # 无编号多行标题仍合并
-    merged = [t for t in texts if t == "某标题前半某标题后半"]
-    assert merged, texts
+    assert "正文内容比较长的一段时间" in texts      # 不拼接
+    assert "某标题前半" in texts and "某标题后半" in texts  # 不合并
+    assert len(out) == 3
 
 
 def test_split_attachments_no_geometry():

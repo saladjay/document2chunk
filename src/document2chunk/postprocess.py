@@ -443,8 +443,10 @@ def merge_cross_page(
         removed.add(fi)
     content = [b for i, b in enumerate(content) if i not in removed]
 
-    # 2. 多行标题合并
-    content = _merge_headings(content)
+    # 2. 多行标题合并——仅限带页 provenance 的内容（PDF/OCR）。DOCX 无页概念，
+    # 折行标题本就是单块，相邻独立标题不应被拼坏（spec §4.5）。
+    if any(_prov_page(b) is not None for b in content):
+        content = _merge_headings(content)
     return content
 
 
