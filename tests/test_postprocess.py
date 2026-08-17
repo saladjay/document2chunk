@@ -469,6 +469,105 @@ def test_split_attachments_no_geometry():
     assert [b.text for b in segs[0]] == ["附件1：某某表格", "附件内容"]
 
 
+# ══════════════════════════════════════
+#  DOCX 分支：字号比 doc_title + 样式层级权威 + 栈首见精化
+# ══════════════════════════════════════
+
+from document2chunk.ir import RunNode, RunProperties
+
+
+def _drun(text, size):
+    return RunNode(id=f"r{text[:3]}{size}", text=text,
+                   style=RunProperties(font_size=size))
+
+
+def _dp(text, size=16.0, centered=False, **kw):
+    """DOCX 形态段落：无 provenance，带字号 runs。"""
+    md = {"centered": True} if centered else {}
+    md.update(kw)
+    return ParagraphNode(id=f"dp{text[:4]}{size}", text=text,
+                         runs=[_drun(text, size)], metadata=md)
+
+
+def _dh(text, level, size=16.0, source=None, centered=False):
+    """DOCX 形态标题：无 provenance，带字号 runs 与 heading_source。"""
+    md = {}
+    if source:
+        md["heading_source"] = source
+    if centered:
+        md["centered"] = True
+    return HeadingNode(id=f"dh{text[:4]}{level}", level=level, text=text,
+                       runs=[_drun(text, size)], metadata=md)
+
+
+def _mdocx():
+    return DocumentMetadata(source_type=SourceType.DOCX)
+
+
+def test_docx_doc_title_by_font_ratio():
+    """首个居中大字号段落（22pt vs 正文 16pt）→ H1 + metadata.title。"""
+    content = [
+        _dp("某某关于改革完善占补平衡管理的通知", size=22.0, centered=True),
+        _dp("正文第一段内容", size=16.0),
+        _dp("正文第二段内容", size=16.0),
+    ]
+    md = _mdocx()
+    out = calibrate_levels(content, md, use_height_fallback=False, body_font_size=16.0)
+    heads = [(b.level, b.text) for b in out if isinstance(b, HeadingNode)]
+    assert heads == [(1, "某某关于改革完善占补平衡管理的通知")], heads
+    assert md.title == "某某关于改革完善占补平衡管理的通知"
+
+
+def test_docx_style_level_authoritative():
+    """heading_source=style 的层级保留，不被编号栈改写。"""
+    content = [
+        _dh("二级样式标题", level=2, size=16.0, source="style"),
+        _dh("一、无样式编号段", level=2, size=16.0, source="heuristic"),
+        _dp("正文内容", size=16.0),
+    ]
+    md = _mdocx()
+    out = calibrate_levels(content, md, use_height_fallback=False, body_font_size=16.0)
+    heads = [(b.level, b.text) for b in out if isinstance(b, HeadingNode)]
+    # 样式 H2 保留；伪标题首见 cn_major 从 prev_level+1 起 → H3（issues5 场景）
+    assert heads == [(2, "二级样式标题"), (3, "一、无样式编号段")], heads
+
+
+def test_docx_stack_first_seen_from_prev():
+    """首见编号样式的分配 = max(next_style_level, prev_level+1)。"""
+    content = [
+        _dh("无编号主标题若干字以上才像标题", level=1, size=16.0),  # 无 source → 走栈/回退路径
+        _dh("一、第一部分", level=2, size=16.0, source="heuristic"),
+        _dh("二、第二部分", level=2, size=16.0, source="heuristic"),
+        _dh("（一）子项甲", level=2, size=16.0, source="heuristic"),
+    ]
+    md = _mdocx()
+    out = calibrate_levels(content, md, use_height_fallback=False, body_font_size=16.0)
+    heads = [(b.level, b.text) for b in out if isinstance(b, HeadingNode)]
+    assert heads == [
+        (1, "无编号主标题若干字以上才像标题"),
+        (2, "一、第一部分"),
+        (2, "二、第二部分"),
+        (3, "（一）子项甲"),
+    ], heads
+
+
+def test_postprocess_docx_entry():
+    """postprocess 入口透传 body_font_size，全链路对 DOCX 形态输入不崩。"""
+    content = [
+        _dp("某某文件的通知标题很长超过八个字符", size=22.0, centered=True),
+        _dh("一、总体要求", level=2, size=16.0, source="heuristic"),
+        _dp("正文内容一段。", size=16.0),
+        _dh("附件1：附表", level=2, size=16.0, source="heuristic"),
+        _dp("附件里的正文。", size=16.0),
+    ]
+    md = _mdocx()
+    main, segs = postprocess(content, md, use_height_fallback=False, body_font_size=16.0)
+    assert md.title == "某某文件的通知标题很长超过八个字符"
+    assert any(isinstance(b, HeadingNode) and b.level == 2 and b.text == "一、总体要求" for b in main)
+    assert len(segs) == 1
+    assert segs[0][0].text == "附件1：附表"
+
+
 if __name__ == "__main__":
     import sys
     fns = [v for k, v in sorted(globals().items()) if k.startswith("test_") and callable(v)]
