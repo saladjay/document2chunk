@@ -768,12 +768,13 @@ def calibrate_levels(
         st = style_of(txt)
 
         # toc 覆盖（精确/前缀，优先于栈序）
+        style_auth = (b.metadata or {}).get("heading_source") == "style"
         toc_lvl = _match_toc_level(txt, toc_map)
         if toc_lvl is not None:
             lvl = toc_lvl
             _log_add(section="calibrate", block_id=b.id, text=txt[:40],
                      detected="toc", action=f"→H{lvl}", reason="toc 映射覆盖")
-        elif (b.metadata or {}).get("heading_source") == "style":
+        elif style_auth:
             # DOCX 样式层级权威（outlineLvl/pStyle 是作者意图）：保留原级，
             # 仅随 doc_title 存在加 offset。优先于编号栈。
             lvl = (b.level + level_offset) if has_doc_title else b.level
@@ -796,7 +797,10 @@ def calibrate_levels(
             )
 
         lvl = max(1, min(lvl, 9))
-        if prev_level and lvl > prev_level + 1:
+        # 跳跃钳制豁免样式权威标题：outlineLvl/pStyle 是作者意图，同级样式
+        # 标题不得因 prev_level 深浅而分叉（doc_title offset 场景 2/3 不一致）。
+        # 1–9 的 min/max 钳制仍生效。
+        if not style_auth and prev_level and lvl > prev_level + 1:
             lvl = prev_level + 1
         prev_level = lvl
         b.level = lvl

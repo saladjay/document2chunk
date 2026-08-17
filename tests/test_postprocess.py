@@ -551,6 +551,25 @@ def test_docx_stack_first_seen_from_prev():
     ], heads
 
 
+def test_docx_style_siblings_consistent_with_doc_title():
+    """doc_title(offset=1) 下两个同级样式标题层级一致（豁免跳跃钳制）。"""
+    content = [
+        _dp("某某关于改革完善管理的通知", size=22.0, centered=True),
+        _dh("二级样式标题甲", level=2, size=16.0, source="style"),
+        _dp("正文一段。", size=16.0),
+        _dh("二级样式标题乙", level=2, size=16.0, source="style"),
+        _dp("正文二段。", size=16.0),
+    ]
+    md = _mdocx()
+    out = calibrate_levels(content, md, use_height_fallback=False, body_font_size=16.0)
+    heads = [(b.level, b.text) for b in out if isinstance(b, HeadingNode)]
+    assert heads == [
+        (1, "某某关于改革完善管理的通知"),
+        (3, "二级样式标题甲"),
+        (3, "二级样式标题乙"),
+    ], heads
+
+
 def test_postprocess_docx_entry():
     """postprocess 入口透传 body_font_size，全链路对 DOCX 形态输入不崩。"""
     content = [
