@@ -420,6 +420,55 @@ def test_postprocess_full_flow():
     assert md.title is not None
 
 
+# ══════════════════════════════════════
+#  无 provenance（DOCX 路）None 安全
+# ══════════════════════════════════════
+
+def test_filter_noise_no_provenance_noop():
+    """DOCX 块（provenance=None）经 filter_noise 不删不改。"""
+    blocks = [
+        H("某标题", level=1),
+        P("正文内容比较长的一段时间"),
+        P("321"),
+    ]
+    for b in blocks:
+        b.provenance = None
+    out = filter_noise(blocks, layout_data=None, page_geometry=None)
+    assert [b.id for b in out] == [b.id for b in blocks]
+
+
+def test_merge_cross_page_no_provenance_noop():
+    """无页码的块不做跨页续接（DOCX 天然单流），多行标题合并仍可工作。"""
+    blocks = [
+        H("某标题前半", level=1),
+        H("某标题后半", level=1),
+        P("正文内容比较长的一段时间"),
+    ]
+    for b in blocks:
+        b.provenance = None
+    out = merge_cross_page(blocks)
+    # 段落未被拼接
+    texts = [getattr(b, "text", "") for b in out]
+    assert "正文内容比较长的一段时间" in texts
+    # 无编号多行标题仍合并
+    merged = [t for t in texts if t == "某标题前半某标题后半"]
+    assert merged, texts
+
+
+def test_split_attachments_no_geometry():
+    """page_geometry=None 时按文本正则正常拆分。"""
+    blocks = [
+        H("主标题", level=1),
+        P("正文段落内容"),
+        H("附件1：某某表格", level=1),
+        P("附件内容"),
+    ]
+    main, segs = split_attachments(blocks, page_geometry=None)
+    assert [b.text for b in main] == ["主标题", "正文段落内容"]
+    assert len(segs) == 1
+    assert [b.text for b in segs[0]] == ["附件1：某某表格", "附件内容"]
+
+
 if __name__ == "__main__":
     import sys
     fns = [v for k, v in sorted(globals().items()) if k.startswith("test_") and callable(v)]
