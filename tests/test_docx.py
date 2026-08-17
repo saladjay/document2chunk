@@ -97,9 +97,9 @@ def test_extract_basic():
 
 def test_heading_levels():
     result = DocxExtractor().extract(_doc())
-    assert result.content[0].level == 1  # outlineLvl 0
+    assert result.content[0].level == 2  # outlineLvl 0，因 doc_title 提升至 H2
     assert result.content[0].text == "第一章"
-    assert result.content[2].level == 1  # pStyle Heading1 经继承链
+    assert result.content[2].level == 2  # pStyle Heading1 经继承链，因 doc_title 提升至 H2
     assert result.content[2].text == "标题"
 
 
@@ -179,10 +179,58 @@ def test_pseudo_heading_promotion():
 def test_centered_marker():
     result = DocxExtractor().extract(make_docx(DOC_MARKED, STYLES))
     p = result.content[3]
-    assert isinstance(p, ParagraphNode)
+    # 居中且字号比 22/11=2.0≥1.0 的段落被提升为 doc_title（HeadingNode level 1）
+    assert isinstance(p, HeadingNode)
     assert p.metadata.get("centered") is True
-    # 大字号 run 保留（22pt，sz val=44）
+    assert p.level == 1  # 主标题
     assert p.runs[0].style.font_size == 22.0
+
+
+DOC_FULL = f"""<w:document xmlns:w="{W}">
+  <w:body>
+    <w:p><w:pPr><w:jc w:val="center"/></w:pPr><w:r><w:rPr><w:sz w:val="44"/></w:rPr><w:t>关于加强耕地保护提升耕地质量的通知</w:t></w:r></w:p>
+    <w:p><w:r><w:t>一、总体要求</w:t></w:r></w:p>
+    <w:p><w:r><w:t>坚持最严格的耕地保护制度。</w:t></w:r></w:p>
+    <w:p><w:r><w:t>二、重点工作</w:t></w:r></w:p>
+    <w:p><w:r><w:t>附件1：占补平衡指标表</w:t></w:r></w:p>
+    <w:p><w:r><w:t>附件说明正文。</w:t></w:r></w:p>
+  </w:body>
+</w:document>"""
+
+
+def test_extractor_postprocess_wired():
+    """extract() 走 postprocess：doc_title 提升 + 伪标题定级 + 附件拆分。"""
+    result = DocxExtractor().extract(make_docx(DOC_FULL, STYLES))
+    # doc_title：居中 22pt（正文 11pt，比≈2.0 ≥1.2）→ metadata.title
+    assert result.metadata.title == "关于加强耕地保护提升耕地质量的通知"
+    # 附件拆分
+    assert len(result.attachments) == 1
+    assert result.attachments[0].metadata.custom.get("is_attachment") is True
+    # 主文标题层级：doc_title H1；一、/二、 伪标题 → H2
+    levels = [(b.level, b.text) for b in result.content if isinstance(b, HeadingNode)]
+    assert (2, "一、总体要求") in levels
+    assert (2, "二、重点工作") in levels
+
+
+def test_extractor_regression_basic():
+    """既有 _doc() 样例接线后结构不变（5 块、层级因 doc_title 提升而调整）。"""
+    result = DocxExtractor().extract(_doc())
+    assert len(result.content) == 5
+    # "粗体14pt" 段落因字号比 14/11=1.27≥1.2 被提升为 doc_title，导致原有标题层级+1
+    assert result.content[0].level == 2  # 原 H1 → H2（因 doc_title 存在）
+    assert result.content[2].level == 2  # 原 H1 → H2（因 doc_title 存在）
+    assert result.attachments == []
+
+
+def test_extractor_split_tables_merged():
+    """连续同表头表格合并（DOCX 手工拆分表场景）。"""
+    tbl = """<w:tbl><w:tr><w:tc><w:p><w:r><w:t>序号</w:t></w:r></w:p></w:tc><w:tc><w:p><w:r><w:t>名称</w:t></w:r></w:p></w:tc></w:tr>
+      <w:tr><w:tc><w:p><w:r><w:t>1</w:t></w:r></w:p></w:tc><w:tc><w:p><w:r><w:t>甲</w:t></w:r></w:p></w:tc></w:tr></w:tbl>"""
+    document = f'<w:document xmlns:w="{W}"><w:body>{tbl}{tbl}<w:p><w:r><w:t>正文。</w:t></w:r></w:p></w:body></w:document>'
+    result = DocxExtractor().extract(make_docx(document, STYLES))
+    tables = [b for b in result.content if isinstance(b, TableNode)]
+    assert len(tables) == 1
+    assert len(tables[0].rows) == 3  # 首表表头 + 数据行1 + 数据行2（第二表跳过表头追加）
 
 
 if __name__ == "__main__":
@@ -197,6 +245,9 @@ if __name__ == "__main__":
         test_heading_source_markers,
         test_pseudo_heading_promotion,
         test_centered_marker,
+        test_extractor_postprocess_wired,
+        test_extractor_regression_basic,
+        test_extractor_split_tables_merged,
     ]:
         fn()
         print(f"ok: {fn.__name__}")
