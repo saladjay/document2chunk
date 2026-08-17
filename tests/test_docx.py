@@ -148,6 +148,43 @@ def test_assemble_and_markdown():
     assert "- 项一" in md
 
 
+DOC_MARKED = f"""<w:document xmlns:w="{W}">
+  <w:body>
+    <w:p><w:pPr><w:pStyle w:val="Heading1"/></w:pPr><w:r><w:t>总体要求</w:t></w:r></w:p>
+    <w:p><w:r><w:t>一、指导思想</w:t></w:r></w:p>
+    <w:p><w:r><w:t>二、基本原则。这里是正文不是标题因为句号结尾。</w:t></w:r></w:p>
+    <w:p><w:pPr><w:jc w:val="center"/></w:pPr><w:r><w:rPr><w:sz w:val="44"/></w:rPr><w:t>某某文件标题</w:t></w:r></w:p>
+  </w:body>
+</w:document>"""
+
+
+def test_heading_source_markers():
+    result = DocxExtractor().extract(make_docx(DOC_MARKED, STYLES))
+    h = result.content[0]
+    assert isinstance(h, HeadingNode)
+    assert h.metadata.get("heading_source") == "style"
+
+
+def test_pseudo_heading_promotion():
+    """无样式短编号段落 → heading_source=heuristic 的 HeadingNode；
+    句号结尾的长段不提升。"""
+    result = DocxExtractor().extract(make_docx(DOC_MARKED, STYLES))
+    assert isinstance(result.content[1], HeadingNode)
+    assert result.content[1].metadata.get("heading_source") == "heuristic"
+    assert result.content[1].text == "一、指导思想"
+    # 句号结尾 → 仍是段落
+    assert isinstance(result.content[2], ParagraphNode)
+
+
+def test_centered_marker():
+    result = DocxExtractor().extract(make_docx(DOC_MARKED, STYLES))
+    p = result.content[3]
+    assert isinstance(p, ParagraphNode)
+    assert p.metadata.get("centered") is True
+    # 大字号 run 保留（22pt，sz val=44）
+    assert p.runs[0].style.font_size == 22.0
+
+
 if __name__ == "__main__":
     for fn in [
         test_extract_basic,
@@ -157,6 +194,9 @@ if __name__ == "__main__":
         test_table_cells,
         test_list_grouping,
         test_assemble_and_markdown,
+        test_heading_source_markers,
+        test_pseudo_heading_promotion,
+        test_centered_marker,
     ]:
         fn()
         print(f"ok: {fn.__name__}")
