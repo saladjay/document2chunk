@@ -75,6 +75,15 @@
 - 单段落/表格解析失败 → WARN + 跳过 + 继续。
 - 文件 > 上限 → `FileTooLargeError`。
 
+### 3.9 统一后处理（2026-08-17 阶段 A）
+
+`DocxExtractor.extract()` 内部调用 `document2chunk.postprocess.postprocess()`（与 PDF / OCR 两路共用）：
+
+- `filter_noise` / `merge_cross_page`：DOCX 无页概念，天然 no-op
+- `calibrate_levels`：doc_title 按字号比（居中 + ≥基准，或 ≥基准×1.2；段落提升仅在无标题级候选时触发）；样式标题（outlineLvl/pStyle）层级权威；无样式短编号段落由 parser 预扫为伪标题（`heading_source="heuristic"`），栈式定级（首见样式从栈顶+1 分配）
+- `split_attachments`：附件/附录边界拆分为 `attachments`（各段 `custom={"is_attachment": True}`）
+- `merge_split_tables`：连续同表头表格合并
+
 ## 4. 场景（When / Then）
 
 - **当** 段落含 `<w:outlineLvl w:val="2"/>` **那么** 产出 `HeadingNode(level=3)`。
