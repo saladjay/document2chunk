@@ -16,11 +16,15 @@ def _choice_or_fallback(alt_el):
     """mc:AlternateContent → 首个 mc:Choice；无 Choice 走 mc:Fallback。"""
     target = None
     for sub in alt_el:
+        if not isinstance(sub.tag, str):
+            continue
         if etree.QName(sub).localname == "Choice":
             target = sub
             break
     if target is None:
         for sub in alt_el:
+            if not isinstance(sub.tag, str):
+                continue
             if etree.QName(sub).localname == "Fallback":
                 target = sub
                 break
@@ -36,6 +40,8 @@ def content_children(el, depth: int = 0) -> Iterator[etree._Element]:
     if depth > _ALT_DEPTH_LIMIT:
         return
     for child in el:
+        if not isinstance(child.tag, str):
+            continue
         if etree.QName(child).localname == "AlternateContent":
             target = _choice_or_fallback(child)
             if target is not None:

@@ -121,9 +121,22 @@ def test_inside_textbox():
 
     xml = f"""<w:p {DOC_NS}><w:r><w:pict><v:shape><v:textbox><w:txbxContent>
       <w:p><w:r><w:t>x</w:t></w:r></w:p>
-    </w:txbxContent></v:textbox></v:shape></w:pict></w:r></w:p>"""
+    </w:txbxContent></v:textbox></v:shape></v:pict></w:r></w:p>"""
     p = etree.fromstring(xml.encode())
     inner_p = p.find(f".//{{{W}}}p")
     assert inner_p is not None and p is not inner_p
     assert inside_textbox(inner_p) is True
     assert inside_textbox(p) is False
+
+
+def test_content_children_skips_comment_nodes():
+    from document2chunk.extractors.docx.embedded import content_children
+
+    xml = f"""<w:p {DOC_NS}>
+      <!-- 一条注释 -->
+      <w:r><w:t>正文</w:t></w:r>
+      <?pi instr?>
+    </w:p>"""
+    p = etree.fromstring(xml.encode())
+    kids = [etree.QName(c).localname for c in content_children(p)]
+    assert kids == ["r"]
