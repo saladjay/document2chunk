@@ -10,6 +10,7 @@ import zipfile
 
 from lxml import etree
 
+from document2chunk.export import to_markdown
 from document2chunk.extractors.docx import DocxExtractor
 from document2chunk.ir import (
     FormulaNode,
@@ -20,6 +21,7 @@ from document2chunk.ir import (
     ParagraphNode,
     TableNode,
 )
+from document2chunk.structure import assemble
 
 W = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
 R = "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
@@ -469,3 +471,43 @@ def test_header_text_metadata_and_content_lock():
     texts = "".join(getattr(b, "text", "") for b in result.content)
     assert "粤高速集团文件" not in texts  # 页眉不进正文（锁现状）
     assert result.metadata.custom["docx"]["header_text"] == "粤高速集团文件"
+
+
+# ---------- Task 9: 红头公文组合集成 ----------
+
+
+def test_gongwen_integration():
+    """红头公文组合：文本框红头(双写) + 标题 + OLE + 尾注 → 阅读顺序正确。"""
+    doc = f"""<w:document {DOC_NS}><w:body>
+      <w:p><w:r><mc:AlternateContent>
+        <mc:Choice Requires="wps"><w:drawing><wp:anchor>
+          <a:graphic><wps:txbx><w:txbxContent>
+            <w:p><w:r><w:t>广东某高速公路有限公司</w:t></w:r></w:p>
+          </w:txbxContent></wps:txbx></a:graphic></wp:anchor></w:drawing>
+        </mc:Choice>
+        <mc:Fallback><w:pict><v:shape><v:textbox><w:txbxContent>
+          <w:p><w:r><w:t>FB</w:t></w:r></w:p>
+        </w:txbxContent></v:textbox></v:shape></w:pict></mc:Fallback>
+      </mc:AlternateContent></w:r></w:p>
+      <w:p><w:pPr><w:outlineLvl w:val="0"/></w:pPr><w:r><w:t>第一章 总体要求</w:t></w:r></w:p>
+      <w:p><w:r><w:t>预算明细见</w:t></w:r><w:r><w:object>
+        <v:shape style="width:90pt;height:50pt"><v:imagedata r:id="rId9"/></v:shape>
+        <o:OLEObject ProgID="Excel.Sheet.8"/>
+      </w:object></w:r></w:p>
+      <w:p><w:r><w:t>参考文献</w:t></w:r><w:r><w:endnoteReference w:id="1"/></w:r></w:p>
+    </w:body></w:document>"""
+    result = DocxExtractor().extract(
+        make_docx(
+            doc,
+            endnotes_xml=ENDNOTES,
+            media={"word/media/olePreview1.wmf": b"WMF"},
+            rels_xml=_RELS_WMF,
+        )
+    )
+    logical = assemble(result)
+    md = to_markdown(logical)
+    # 阅读顺序：红头 → 标题 → 正文(OLE alt) → 尾注
+    assert md.index("广东某高速公路有限公司") < md.index("# 第一章 总体要求")
+    assert md.index("# 第一章 总体要求") < md.index("OLE 对象 (Excel.Sheet.8)")
+    assert md.index("OLE 对象") < md.index("[尾注1] 王某某")
+    assert "FB" not in md  # Fallback 文本（本 fixture 中仅为 "FB"）不出现
