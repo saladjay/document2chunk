@@ -327,3 +327,26 @@ def test_image_inside_textbox_no_leak():
     assert result.content[1] is imgs[0]
     assert result.content[0].text == "框内文字"
     assert result.content[2].text == "正文"
+
+
+def test_nested_textbox_no_double_expansion():
+    doc = f"""<w:document {DOC_NS}><w:body>
+      <w:p><w:r><w:pict><v:shape><v:textbox><w:txbxContent>
+        <w:p><w:r><w:t>外框文字</w:t></w:r></w:p>
+        <w:tbl><w:tr><w:tc><w:p><w:r><w:pict><v:shape><v:textbox><w:txbxContent>
+          <w:p><w:r><w:t>内框文字</w:t></w:r></w:p>
+        </w:txbxContent></v:textbox></v:shape></w:pict></w:r></w:p></w:tc></w:tr></w:tbl>
+      </w:txbxContent></v:textbox></v:shape></w:pict></w:r></w:p>
+    </w:body></w:document>"""
+    result = DocxExtractor().extract(make_docx(doc))
+    all_texts = [getattr(b, "text", "") for b in result.content]
+    # 深入表格单元格收集全部文本
+    for b in result.content:
+        if isinstance(b, TableNode):
+            for row in b.rows:
+                for cell in row.cells:
+                    for cb in cell.blocks:
+                        all_texts.append(getattr(cb, "text", ""))
+    joined = "".join(all_texts)
+    assert joined.count("内框文字") == 1  # 嵌套框只展开一次
+    assert joined.count("外框文字") == 1

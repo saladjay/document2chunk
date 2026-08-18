@@ -439,6 +439,8 @@ class DocumentParser:
         for el in embedded.iter_content(p):
             if etree.QName(el).localname != "txbxContent":
                 continue
+            if self._in_nested_textbox(el, p):
+                continue  # 嵌套文本框由其容器展开，避免双重输出
             try:
                 for child in embedded.content_children(el):
                     tag = etree.QName(child).localname
@@ -473,6 +475,16 @@ class DocumentParser:
             except Exception as e:  # 单文本框失败不拖垮段落（设计 §5）
                 _logger.warning("文本框解析失败，跳过: %s", e)
         return blocks
+
+    @staticmethod
+    def _in_nested_textbox(el, root) -> bool:
+        """el 与 root 之间是否还有别的 txbxContent（嵌套框归容器展开）。"""
+        a = el.getparent()
+        while a is not None and a is not root:
+            if etree.QName(a).localname == "txbxContent":
+                return True
+            a = a.getparent()
+        return False
 
     # ============ TOC（best-effort）============
     def _parse_table(self, tbl) -> TableNode:
