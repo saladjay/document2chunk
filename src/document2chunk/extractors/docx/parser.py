@@ -166,7 +166,7 @@ class DocumentParser:
                     hmd["centered"] = True
                 blocks.append(HeadingNode(
                     id=self._bid(), level=level, text=text,
-                    runs=[r for r in runs if isinstance(r, RunNode)],  # 模型只收 RunNode
+                    runs=self._run_only(runs),
                     metadata=hmd,
                 ))
             elif kind == "list":
@@ -183,7 +183,7 @@ class DocumentParser:
                     if self._is_pseudo_heading(text):
                         blocks.append(HeadingNode(
                             id=self._bid(), level=2, text=text,
-                            runs=[r for r in runs if isinstance(r, RunNode)],  # 模型只收 RunNode
+                            runs=self._run_only(runs),
                             metadata={**md, "heading_source": "heuristic"},
                         ))
                     else:
@@ -376,6 +376,11 @@ class DocumentParser:
                     out.append(InlineFormulaNode(id=self._rid(), latex=latex))
         return out
 
+    @staticmethod
+    def _run_only(runs) -> List[RunNode]:
+        """HeadingNode.runs 只收 RunNode（HyperlinkNode/InlineFormulaNode 会触发校验错误）。"""
+        return [r for r in runs if isinstance(r, RunNode)]
+
     def _parse_run(self, r, base) -> Tuple[str, Optional[RunNode]]:
         parts: List[str] = []
         for sub in embedded.content_children(r):
@@ -460,8 +465,8 @@ class DocumentParser:
                 continue
             if self._in_nested_textbox(el, p):
                 continue  # 嵌套文本框由其容器展开，避免双重输出
-            try:
-                for child in embedded.content_children(el):
+            for child in embedded.content_children(el):
+                try:
                     tag = etree.QName(child).localname
                     if tag == "p":
                         kind, level, runs, text, list_info, images = self._classify(child)
@@ -481,7 +486,8 @@ class DocumentParser:
                             md["heading_source"] = hsrc or "heuristic"  # 阶段A 契约（设计 §7）
                             blocks.append(
                                 HeadingNode(
-                                    id=self._bid(), level=level, text=text, runs=runs,
+                                    id=self._bid(), level=level, text=text,
+                                    runs=self._run_only(runs),
                                     metadata=md,
                                 )
                             )
@@ -491,8 +497,12 @@ class DocumentParser:
                             )
                     elif tag == "tbl":
                         blocks.append(self._parse_table(child))
-            except Exception as e:  # 单文本框失败不拖垮段落（设计 §5）
-                _logger.warning("文本框解析失败，跳过: %s", e)
+                except Exception as e:  # 单段失败只丢自身，不拖垮整个文本框（spec §3.8）
+                    head = "".join(
+                        t.text or "" for t in child.iter()
+                        if etree.QName(t).localname == "t"
+                    )[:30]
+                    _logger.warning("文本框段落解析失败，跳过(%s…): %s", head, e)
         return blocks
 
     @staticmethod
@@ -569,7 +579,9 @@ class DocumentParser:
                 if kind == "formula":
                     blocks.append(FormulaNode(id=self._bid(), latex=text or None))
                 elif kind == "heading":
-                    blocks.append(HeadingNode(id=self._bid(), level=level, text=text, runs=runs))
+                    blocks.append(HeadingNode(
+                        id=self._bid(), level=level, text=text, runs=self._run_only(runs)
+                    ))
                 elif text or runs:
                     blocks.append(ParagraphNode(id=self._bid(), runs=runs, text=text))
                 tb = self._textbox_blocks(child)

@@ -19,6 +19,7 @@ from document2chunk.ir import (
     InlineFormulaNode,
     ListNode,
     ParagraphNode,
+    RunNode,
     TableNode,
 )
 from document2chunk.structure import assemble
@@ -549,3 +550,33 @@ def test_realworld_edge_inputs_no_crash():
     assert isinstance(h, HeadingNode)
     assert "链接文字" in h.text and "E" in h.text
     assert all(type(r).__name__ == "RunNode" for r in h.runs)
+
+
+def test_cell_heading_with_hyperlink_no_crash():
+    doc = f"""<w:document {DOC_NS}><w:body>
+      <w:tbl><w:tr><w:tc>
+        <w:p><w:pPr><w:outlineLvl w:val="0"/></w:pPr>
+          <w:hyperlink r:id="rId1"><w:r><w:t>链接标题</w:t></w:r></w:hyperlink></w:p>
+      </w:tc></w:tr></w:tbl>
+    </w:body></w:document>"""
+    result = DocxExtractor().extract(make_docx(doc))
+    table = result.content[0]
+    assert isinstance(table, TableNode)
+    h = table.rows[0].cells[0].blocks[0]
+    assert isinstance(h, HeadingNode)
+    assert h.text == "链接标题"          # 文本保留超链接内容
+    assert all(isinstance(r, RunNode) for r in h.runs)  # runs 只剩 RunNode
+
+
+def test_textbox_heading_with_hyperlink_sibling_survives():
+    doc = f"""<w:document {DOC_NS}><w:body>
+      <w:p><w:r><w:pict><v:shape><v:textbox><w:txbxContent>
+        <w:p><w:pPr><w:outlineLvl w:val="0"/></w:pPr>
+          <w:hyperlink r:id="rId1"><w:r><w:t>红头链接标题</w:t></w:r></w:hyperlink></w:p>
+        <w:p><w:r><w:t>框内普通段</w:t></w:r></w:p>
+      </w:txbxContent></v:textbox></v:shape></w:pict></w:r></w:p>
+    </w:body></w:document>"""
+    result = DocxExtractor().extract(make_docx(doc))
+    texts = [getattr(b, "text", "") for b in result.content]
+    assert "红头链接标题" in texts       # 标题段存活（runs 已过滤）
+    assert "框内普通段" in texts         # 兄弟段落不陪葬
