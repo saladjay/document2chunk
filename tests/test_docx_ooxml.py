@@ -350,3 +350,53 @@ def test_nested_textbox_no_double_expansion():
     joined = "".join(all_texts)
     assert joined.count("内框文字") == 1  # 嵌套框只展开一次
     assert joined.count("外框文字") == 1
+
+
+# ---------- Task 6: 尾注/脚注 ----------
+
+ENDNOTES = f"""<w:endnotes {DOC_NS}>
+  <w:endnote w:type="separator"><w:p><w:r><w:separator/></w:r></w:p></w:endnote>
+  <w:endnote w:type="continuationSeparator"><w:p><w:r><w:continuationSeparator/></w:r></w:p></w:endnote>
+  <w:endnote w:id="2"><w:p><w:r><w:t>Keoleian G A, et al. Life Cycle Assessment.</w:t></w:r></w:p></w:endnote>
+  <w:endnote w:id="1"><w:p><w:r><w:t>王某某. 沥青路面研究[J]. 公路, 2023.</w:t></w:r></w:p></w:endnote>
+</w:endnotes>"""
+
+
+def test_endnote_marker_and_tail_blocks():
+    doc = f"""<w:document {DOC_NS}><w:body>
+      <w:p><w:r><w:t>引用一处</w:t></w:r><w:r><w:endnoteReference w:id="2"/></w:r></w:p>
+      <w:p><w:r><w:t>引用二处</w:t></w:r><w:r><w:endnoteReference w:id="1"/></w:r></w:p>
+    </w:body></w:document>"""
+    result = DocxExtractor().extract(make_docx(doc, endnotes_xml=ENDNOTES))
+    assert result.content[0].text == "引用一处[尾注2]"
+    assert result.content[1].text == "引用二处[尾注1]"
+    tail = result.content[2:]
+    assert len(tail) == 2  # separator 条目不计
+    assert tail[0].text == "[尾注1] 王某某. 沥青路面研究[J]. 公路, 2023."  # id 数值序
+    assert tail[1].text == "[尾注2] Keoleian G A, et al. Life Cycle Assessment."
+    assert tail[0].metadata["note"] == {"type": "endnote", "id": "1"}
+
+
+def test_footnote_same_mechanism():
+    footnotes = f"""<w:footnotes {DOC_NS}>
+      <w:footnote w:type="separator"><w:p><w:r><w:separator/></w:r></w:p></w:footnote>
+      <w:footnote w:id="1"><w:p><w:r><w:t>见附录A。</w:t></w:r></w:p></w:footnote>
+    </w:footnotes>"""
+    doc = f"""<w:document {DOC_NS}><w:body>
+      <w:p><w:r><w:t>说明</w:t></w:r><w:r><w:footnoteReference w:id="1"/></w:r></w:p>
+    </w:body></w:document>"""
+    result = DocxExtractor().extract(make_docx(doc, footnotes_xml=footnotes))
+    assert result.content[0].text == "说明[脚注1]"
+    assert result.content[1].text == "[脚注1] 见附录A。"
+    assert result.content[1].metadata["note"] == {"type": "footnote", "id": "1"}
+
+
+def test_empty_notes_part_no_blocks():
+    """WPS 空壳 footnotes.xml（40% 样本）不产出任何块。"""
+    shell = f"""<w:footnotes {DOC_NS}>
+      <w:footnote w:type="separator"><w:p><w:r><w:separator/></w:r></w:p></w:footnote>
+      <w:footnote w:type="continuationSeparator"><w:p><w:r><w:continuationSeparator/></w:r></w:p></w:footnote>
+    </w:footnotes>"""
+    doc = f'<w:document {DOC_NS}><w:body><w:p><w:r><w:t>正文</w:t></w:r></w:p></w:body></w:document>'
+    result = DocxExtractor().extract(make_docx(doc, footnotes_xml=shell))
+    assert len(result.content) == 1 and result.content[0].text == "正文"

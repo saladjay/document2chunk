@@ -8,6 +8,7 @@ from typing import List, Optional
 
 from document2chunk.extractors.docx.package_reader import PackageReader
 from document2chunk.extractors.docx.parser import DocumentParser
+from document2chunk.extractors.docx import notes
 from document2chunk.extractors.docx.styles import StyleRegistry
 from document2chunk.ir import (
     BlockNode,
@@ -101,6 +102,14 @@ class DocxExtractor:
             use_height_fallback=False,
             body_font_size=_body_font_size(blocks),
             _log=pp_log,
+        )
+
+        # 尾注/脚注内容：正文末尾集中。必须在 postprocess 之后——
+        # 若在之前追加，split_attachments 会把尾注划进文档末尾的附件段（设计 §4.5）
+        main_content = (
+            main_content
+            + notes.parse_notes(reader, "endnote")
+            + notes.parse_notes(reader, "footnote")
         )
 
         result = ExtractionResult(
