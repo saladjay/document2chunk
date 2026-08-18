@@ -7,13 +7,17 @@ from typing import List, Optional, Tuple
 
 from lxml import etree
 
+from document2chunk.extractors.docx import embedded
 from document2chunk.extractors.docx._ooxml import A, WP, w, ra, wa
+from document2chunk.extractors.docx.embedded import omml_to_latex
 from document2chunk.extractors.docx.styles import StyleRegistry, parse_rpr
 from document2chunk.ir import (
     BlockNode,
+    FormulaNode,
     HeadingNode,
     HyperlinkNode,
     ImageNode,
+    InlineFormulaNode,
     InlineNode,
     ListItemNode,
     ListNode,
@@ -149,7 +153,10 @@ class DocumentParser:
                 flush_list()
                 blocks.extend(images)
 
-            if kind == "heading":
+            if kind == "formula":
+                flush_list()
+                blocks.append(FormulaNode(id=self._bid(), latex=text or None))
+            elif kind == "heading":
                 flush_list()
                 hmd = {"heading_source": hsrc or "heuristic"}
                 if self._is_centered(child):
@@ -190,6 +197,10 @@ class DocumentParser:
 
     # ============ 段落分类 ============
     def _classify(self, p):
+        # OMML 公式段：段落主体是 oMathPara 且无普通 run → 块级公式（阶段B §4.3）
+        formula = self._block_formula(p)
+        if formula is not None:
+            return "formula", None, [], formula, None, []
         ppr = p.find(w("pPr"))
         pstyle_id = None
         if ppr is not None:
@@ -208,6 +219,31 @@ class DocumentParser:
         else:
             kind = "para"
         return kind, level, runs, text, list_info, images
+
+    def _block_formula(self, p) -> Optional[str]:
+        """段落级 oMathPara → latex；混合段落（含 run/hyperlink）返回 None 走行内。"""
+        omp = None
+        has_text = False
+        for child in embedded.content_children(p):
+            ln = etree.QName(child).localname
+            if ln == "oMathPara":
+                omp = child
+            elif ln in ("r", "hyperlink"):
+                has_text = True
+        if omp is None or has_text:
+            return None
+        latex = " ".join(
+            x
+            for x in (
+                omml_to_latex(c)
+                for c in embedded.content_children(omp)
+                if etree.QName(c).localname == "oMath"
+            )
+            if x.strip()
+        )
+        if not latex.strip():
+            latex = embedded.omml_text(omp)  # 纯文本兜底（设计 §4.3）
+        return latex or None
 
     def _detect_heading(self, p, pstyle_id, text) -> Optional[int]:
         level, _ = self._heading_level_source(p, pstyle_id, text)
@@ -270,13 +306,14 @@ class DocumentParser:
         text_parts: List[str] = []
         base = self._styles.merged_rpr(pstyle_id)
 
-        for child in p:
+        for child in embedded.content_children(p):
             tag = etree.QName(child).localname
             if tag == "r":
                 t, run = self._parse_run(child, base)
                 if run is not None:
                     inlines.append(run)
                     text_parts.append(t)
+                inlines.extend(self._inline_math(child))
             elif tag == "hyperlink":
                 hl_runs: List[RunNode] = []
                 hl_text: List[str] = []
@@ -290,11 +327,34 @@ class DocumentParser:
                     HyperlinkNode(id=self._rid(), target=target, runs=hl_runs)
                 )
                 text_parts.append("".join(hl_text))
+            elif tag == "oMath":
+                latex = omml_to_latex(child)
+                if latex.strip():
+                    inlines.append(InlineFormulaNode(id=self._rid(), latex=latex))
+                    text_parts.append(latex)
+            elif tag == "oMathPara":
+                # 混合段落里的公式段：内部各 oMath 作行内处理
+                for om in embedded.content_children(child):
+                    if etree.QName(om).localname == "oMath":
+                        latex = omml_to_latex(om)
+                        if latex.strip():
+                            inlines.append(InlineFormulaNode(id=self._rid(), latex=latex))
+                            text_parts.append(latex)
         return inlines, "".join(text_parts)
+
+    def _inline_math(self, r) -> List[InlineFormulaNode]:
+        """run 内 m:oMath → 行内公式节点（latex 同时经 _parse_run 进文本）。"""
+        out: List[InlineFormulaNode] = []
+        for sub in embedded.content_children(r):
+            if etree.QName(sub).localname == "oMath":
+                latex = omml_to_latex(sub)
+                if latex.strip():
+                    out.append(InlineFormulaNode(id=self._rid(), latex=latex))
+        return out
 
     def _parse_run(self, r, base) -> Tuple[str, Optional[RunNode]]:
         parts: List[str] = []
-        for sub in r:
+        for sub in embedded.content_children(r):
             tag = etree.QName(sub).localname
             if tag == "t":
                 parts.append(sub.text or "")
@@ -302,6 +362,8 @@ class DocumentParser:
                 parts.append("\t")
             elif tag == "br":
                 parts.append("\n")
+            elif tag == "oMath":
+                parts.append(omml_to_latex(sub))
         text = "".join(parts)
         if not text.strip():
             return "", None
@@ -413,7 +475,9 @@ class DocumentParser:
                 kind, level, runs, text, list_info, images = self._classify(child)
                 if images:
                     blocks.extend(images)
-                if kind == "heading":
+                if kind == "formula":
+                    blocks.append(FormulaNode(id=self._bid(), latex=text or None))
+                elif kind == "heading":
                     blocks.append(HeadingNode(id=self._bid(), level=level, text=text, runs=runs))
                 elif text or runs:
                     blocks.append(ParagraphNode(id=self._bid(), runs=runs, text=text))

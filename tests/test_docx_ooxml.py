@@ -11,6 +11,15 @@ import zipfile
 from lxml import etree
 
 from document2chunk.extractors.docx import DocxExtractor
+from document2chunk.ir import (
+    FormulaNode,
+    HeadingNode,
+    ImageNode,
+    InlineFormulaNode,
+    ListNode,
+    ParagraphNode,
+    TableNode,
+)
 
 W = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
 R = "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
@@ -178,3 +187,45 @@ def test_reader_media_info_for_rel():
     assert r.media_info_for_rel("rId999") is None
     # 既有接口行为不变
     assert r.media_for_rel("rId7") == (b"PNGDATA", "png")
+
+
+# ---------- Task 3: OMML 公式 ----------
+
+
+def test_omml_inline_formula_in_paragraph():
+    doc = f"""<w:document {DOC_NS}><w:body>
+      <w:p><w:r><w:t>比值为</w:t></w:r><m:oMath>
+        <m:f><m:num><m:r><m:t>a</m:t></m:r></m:num><m:den><m:r><m:t>b</m:t></m:r></m:den></m:f>
+      </m:oMath></w:p>
+    </w:body></w:document>"""
+    result = DocxExtractor().extract(make_docx(doc))
+
+    para = result.content[0]
+    assert isinstance(para, ParagraphNode)
+    formulas = [r for r in para.runs if isinstance(r, InlineFormulaNode)]
+    assert len(formulas) == 1 and formulas[0].latex == "\\frac{a}{b}"
+    assert "\\frac{a}{b}" in para.text  # latex 进段落 text（markdown 走 text）
+
+
+def test_omml_inline_formula_inside_run():
+    doc = f"""<w:document {DOC_NS}><w:body>
+      <w:p><w:r><w:t>x</w:t><m:oMath>
+        <m:sSup><m:e><m:r><m:t>x</m:t></m:r></m:e><m:sup><m:r><m:t>2</m:t></m:r></m:sup></m:sSup>
+      </m:oMath></w:r></w:p>
+    </w:body></w:document>"""
+    result = DocxExtractor().extract(make_docx(doc))
+
+    para = result.content[0]
+    assert "x^{2}" in para.text
+    assert any(isinstance(r, InlineFormulaNode) and r.latex == "x^{2}" for r in para.runs)
+
+
+def test_omml_block_formula():
+    doc = f"""<w:document {DOC_NS}><w:body>
+      <w:p><m:oMathPara><m:oMath>
+        <m:rad><m:e><m:r><m:t>x</m:t></m:r></m:e></m:rad>
+      </m:oMath></m:oMathPara></w:p>
+    </w:body></w:document>"""
+    result = DocxExtractor().extract(make_docx(doc))
+    f = result.content[0]
+    assert isinstance(f, FormulaNode) and f.latex == "\\sqrt{x}"
