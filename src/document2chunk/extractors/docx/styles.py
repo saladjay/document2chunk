@@ -49,7 +49,9 @@ def parse_rpr(rpr_elem: Optional[etree._Element]) -> Dict[str, object]:
         val = wa(sz, "val")
         if val:
             try:
-                out["size"] = int(val) / 2.0  # half-point → pt
+                pt = int(val) / 2.0  # half-point → pt
+                if pt > 0:  # w:sz="0"（真实样本出现）→ 缺省，模型要求 >0
+                    out["size"] = pt
             except ValueError:
                 pass
 

@@ -165,7 +165,9 @@ class DocumentParser:
                 if self._is_centered(child):
                     hmd["centered"] = True
                 blocks.append(HeadingNode(
-                    id=self._bid(), level=level, text=text, runs=runs, metadata=hmd,
+                    id=self._bid(), level=level, text=text,
+                    runs=[r for r in runs if isinstance(r, RunNode)],  # 模型只收 RunNode
+                    metadata=hmd,
                 ))
             elif kind == "list":
                 num_id, ilvl = list_info
@@ -180,7 +182,8 @@ class DocumentParser:
                     md: dict = {"centered": True} if self._is_centered(child) else {}
                     if self._is_pseudo_heading(text):
                         blocks.append(HeadingNode(
-                            id=self._bid(), level=2, text=text, runs=runs,
+                            id=self._bid(), level=2, text=text,
+                            runs=[r for r in runs if isinstance(r, RunNode)],  # 模型只收 RunNode
                             metadata={**md, "heading_source": "heuristic"},
                         ))
                     else:
@@ -212,7 +215,7 @@ class DocumentParser:
     @staticmethod
     def _ilvl_int(ilvl: str) -> int:
         try:
-            return int(float(ilvl))
+            return max(0, int(float(ilvl)))  # WPS 可能写 -1，模型下限 0（spec §3.8 降级）
         except (ValueError, TypeError):
             return 0
 

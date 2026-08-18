@@ -511,3 +511,41 @@ def test_gongwen_integration():
     assert md.index("# 第一章 总体要求") < md.index("OLE 对象 (Excel.Sheet.8)")
     assert md.index("OLE 对象") < md.index("[尾注1] 王某某")
     assert "FB" not in md  # Fallback 文本（本 fixture 中仅为 "FB"）不出现
+
+
+def test_realworld_edge_inputs_no_crash():
+    """799 真实样本抽查扫描发现的 3 类边界输入（整文件崩溃 → 应 WARN 级降级，spec §3.8）。
+
+    1) w:ilvl w:val="-1"（WPS 负层级）→ ListItemNode.level 下限 0；
+    2) w:sz w:val="0"（0 磅字号）→ 不进 RunProperties（模型要求 >0）；
+    3) 标题段含超链接/行内公式 → HeadingNode.runs 只收 RunNode（文本保留在 text）。
+    """
+    # 1) 负列表层级
+    doc = f"""<w:document {DOC_NS}><w:body>
+      <w:p><w:pPr><w:numPr><w:ilvl w:val="-1"/><w:numId w:val="1"/></w:numPr></w:pPr>
+        <w:r><w:t>负层级列表项</w:t></w:r></w:p>
+    </w:body></w:document>"""
+    result = DocxExtractor().extract(make_docx(doc))
+    lst = next(b for b in result.content if isinstance(b, ListNode))
+    assert lst.items[0].level == 0 and lst.items[0].blocks[0].text == "负层级列表项"
+
+    # 2) 0 磅字号
+    doc = f"""<w:document {DOC_NS}><w:body>
+      <w:p><w:r><w:rPr><w:sz w:val="0"/></w:rPr><w:t>零字号</w:t></w:r></w:p>
+    </w:body></w:document>"""
+    result = DocxExtractor().extract(make_docx(doc))
+    assert result.content[0].runs[0].style.font_size is None
+
+    # 3) 标题段内超链接 + 行内公式
+    doc = f"""<w:document {DOC_NS}><w:body>
+      <w:p><w:pPr><w:outlineLvl w:val="0"/></w:pPr>
+        <w:r><w:t>见</w:t></w:r>
+        <w:hyperlink r:id="rId1"><w:r><w:t>链接文字</w:t></w:r></w:hyperlink>
+        <m:oMath><m:r><m:t>E</m:t></m:r></m:oMath>
+      </w:p>
+    </w:body></w:document>"""
+    result = DocxExtractor().extract(make_docx(doc))
+    h = result.content[0]
+    assert isinstance(h, HeadingNode)
+    assert "链接文字" in h.text and "E" in h.text
+    assert all(type(r).__name__ == "RunNode" for r in h.runs)
