@@ -5,9 +5,13 @@
 
 from __future__ import annotations
 
-from typing import Iterator
+import re
+from typing import Iterator, Optional
 
 from lxml import etree
+
+from document2chunk.extractors.docx._ooxml import ra
+from document2chunk.ir import ImageNode
 
 _ALT_DEPTH_LIMIT = 10
 
@@ -123,3 +127,42 @@ def omml_text(el) -> str:
     if el is None:
         return ""
     return "".join(e.text or "" for e in el.iter() if etree.QName(e).localname == "t")
+
+
+# ============ OLE 嵌入（占位 ImageNode，阶段B §4.4） ============
+
+_SHAPE_WH = re.compile(r"width:([\d.]+)pt;height:([\d.]+)pt", re.IGNORECASE)
+
+
+def parse_ole_object(obj_el, reader, id_factory) -> ImageNode:
+    """w:object → 占位 ImageNode（预览图 rel + ProgID alt，pt→EMU）。"""
+    prog = None
+    embed = None
+    shape = None
+    for sub in obj_el.iter():
+        ln = etree.QName(sub).localname
+        if prog is None and ln == "OLEObject":
+            prog = sub.get("ProgID")
+        if embed is None and ln == "imagedata":
+            embed = ra(sub, "id")
+        if shape is None and ln == "shape":
+            shape = sub
+    fmt = None
+    if embed and reader is not None:
+        info = reader.media_info_for_rel(embed)
+        if info:
+            fmt = info[2] or None
+    w = h = None
+    if shape is not None:
+        mt = _SHAPE_WH.search((shape.get("style") or "").replace(" ", ""))
+        if mt:
+            w, h = int(float(mt.group(1)) * 12700), int(float(mt.group(2)) * 12700)
+    alt = f"OLE 对象 ({prog})" if prog else "OLE 对象"
+    return ImageNode(
+        id=id_factory(),
+        image_id=embed or "",
+        format=fmt,
+        width_emu=w,
+        height_emu=h,
+        alt=alt,
+    )

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import re
 from typing import List, Optional, Tuple
 
@@ -30,6 +31,8 @@ from document2chunk.ir import (
     TocEntry,
 )
 from document2chunk.postprocess import style_of
+
+_logger = logging.getLogger(__name__)
 
 _HEADING_HEURISTIC = [
     (re.compile(r"^第[一二三四五六七八九十百千]+[章篇部]"), 1),
@@ -383,35 +386,42 @@ class DocumentParser:
     # ============ 图片 ============
     def _extract_images(self, p) -> List[ImageNode]:
         out: List[ImageNode] = []
-        for blip in p.iter(f"{{{A}}}blip"):
-            embed = ra(blip, "embed")
-            if not embed:
-                continue
-            drawing = blip.getparent()
-            while drawing is not None and etree.QName(drawing).localname != "drawing":
-                drawing = drawing.getparent()
-            cx = cy = alt = fmt = None
-            if drawing is not None:
-                ext = drawing.find(f".//{{{WP}}}extent")
-                if ext is not None:
-                    cx, cy = ext.get("cx"), ext.get("cy")
-                docpr = drawing.find(f".//{{{WP}}}docPr")
-                if docpr is not None:
-                    alt = docpr.get("descr") or docpr.get("name")
-            if self._reader is not None:
-                media = self._reader.media_for_rel(embed)
-                if media is not None:
-                    _, fmt = media
-            out.append(
-                ImageNode(
-                    id=self._bid(),
-                    image_id=embed,
-                    format=fmt,
-                    width_emu=int(cx) if cx and cx.isdigit() else None,
-                    height_emu=int(cy) if cy and cy.isdigit() else None,
-                    alt=alt,
+        for el in embedded.iter_content(p):
+            ln = etree.QName(el).localname
+            if ln == "blip":
+                embed = ra(el, "embed")
+                if not embed:
+                    continue
+                drawing = el.getparent()
+                while drawing is not None and etree.QName(drawing).localname != "drawing":
+                    drawing = drawing.getparent()
+                cx = cy = alt = fmt = None
+                if drawing is not None:
+                    ext = drawing.find(f".//{{{WP}}}extent")
+                    if ext is not None:
+                        cx, cy = ext.get("cx"), ext.get("cy")
+                    docpr = drawing.find(f".//{{{WP}}}docPr")
+                    if docpr is not None:
+                        alt = docpr.get("descr") or docpr.get("name")
+                if self._reader is not None:
+                    media = self._reader.media_for_rel(embed)
+                    if media is not None:
+                        _, fmt = media
+                out.append(
+                    ImageNode(
+                        id=self._bid(),
+                        image_id=embed,
+                        format=fmt,
+                        width_emu=int(cx) if cx and cx.isdigit() else None,
+                        height_emu=int(cy) if cy and cy.isdigit() else None,
+                        alt=alt,
+                    )
                 )
-            )
+            elif ln == "object":
+                try:
+                    out.append(embedded.parse_ole_object(el, self._reader, self._bid))
+                except Exception as e:  # 单嵌入物失败不拖垮段落（设计 §5 / spec §3.8）
+                    _logger.warning("OLE 解析失败，跳过: %s", e)
         return out
 
     # ============ TOC（best-effort）============

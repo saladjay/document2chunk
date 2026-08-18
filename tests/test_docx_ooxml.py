@@ -229,3 +229,42 @@ def test_omml_block_formula():
     result = DocxExtractor().extract(make_docx(doc))
     f = result.content[0]
     assert isinstance(f, FormulaNode) and f.latex == "\\sqrt{x}"
+
+
+# ---------- Task 4: OLE 占位 ----------
+
+_RELS_WMF = f"""<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId9" Type="{R}/image" Target="media/olePreview1.wmf"/>
+</Relationships>"""
+
+
+def test_ole_placeholder_image():
+    doc = f"""<w:document {DOC_NS}><w:body>
+      <w:p><w:r><w:t>预算明细见下表：</w:t></w:r></w:p>
+      <w:p><w:r><w:object>
+        <v:shape style="width:100pt;height:60pt"><v:imagedata r:id="rId9"/></v:shape>
+        <o:OLEObject ProgID="Excel.Sheet.8"/>
+      </w:object></w:r></w:p>
+    </w:body></w:document>"""
+    result = DocxExtractor().extract(
+        make_docx(doc, media={"word/media/olePreview1.wmf": b"WMFDATA"}, rels_xml=_RELS_WMF)
+    )
+    imgs = [b for b in result.content if isinstance(b, ImageNode)]
+    assert len(imgs) == 1
+    img = imgs[0]
+    assert img.alt == "OLE 对象 (Excel.Sheet.8)"
+    assert img.image_id == "rId9"
+    assert img.format == "wmf"
+    assert img.width_emu == 1270000  # 100pt × 12700
+    assert img.height_emu == 762000  # 60pt × 12700
+
+
+def test_ole_without_preview_rel_still_placeholder():
+    doc = f"""<w:document {DOC_NS}><w:body>
+      <w:p><w:r><w:object><o:OLEObject ProgID="Equation.3"/></w:object></w:r></w:p>
+    </w:body></w:document>"""
+    result = DocxExtractor().extract(make_docx(doc))
+    imgs = [b for b in result.content if isinstance(b, ImageNode)]
+    assert len(imgs) == 1
+    assert imgs[0].alt == "OLE 对象 (Equation.3)"
+    assert imgs[0].format is None
