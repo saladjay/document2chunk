@@ -188,6 +188,12 @@ class DocumentParser:
                             id=self._bid(), runs=runs, text=text, metadata=md,
                         ))
 
+            # 文本框内容内联展开（紧随锚点段落）
+            tb = self._textbox_blocks(child)
+            if tb:
+                flush_list()
+                blocks.extend(tb)
+
         flush_list()
         return blocks, self._toc_entries
 
@@ -386,7 +392,10 @@ class DocumentParser:
     # ============ 图片 ============
     def _extract_images(self, p) -> List[ImageNode]:
         out: List[ImageNode] = []
+        host_in_textbox = embedded.inside_textbox(p)
         for el in embedded.iter_content(p):
+            if not host_in_textbox and embedded.inside_textbox(el):
+                continue  # 文本框内图片随展开逻辑处理，不泄出顶层
             ln = etree.QName(el).localname
             if ln == "blip":
                 embed = ra(el, "embed")
@@ -423,6 +432,47 @@ class DocumentParser:
                 except Exception as e:  # 单嵌入物失败不拖垮段落（设计 §5 / spec §3.8）
                     _logger.warning("OLE 解析失败，跳过: %s", e)
         return out
+
+    def _textbox_blocks(self, p) -> List[BlockNode]:
+        """锚点段内文本框内容 → 块列表（内联展开，紧随锚点段落，阶段B §4.2）。"""
+        blocks: List[BlockNode] = []
+        for el in embedded.iter_content(p):
+            if etree.QName(el).localname != "txbxContent":
+                continue
+            try:
+                for child in embedded.content_children(el):
+                    tag = etree.QName(child).localname
+                    if tag == "p":
+                        kind, level, runs, text, list_info, images = self._classify(child)
+                        if images:
+                            blocks.extend(images)
+                        md = {"textbox": True}
+                        if self._is_centered(child):
+                            md["centered"] = True
+                        if kind == "formula":
+                            blocks.append(
+                                FormulaNode(id=self._bid(), latex=text or None, metadata=md)
+                            )
+                        elif kind == "heading" and text:
+                            _, hsrc = self._heading_level_source(
+                                child, self._paragraph_style(child), text
+                            )
+                            md["heading_source"] = hsrc or "heuristic"  # 阶段A 契约（设计 §7）
+                            blocks.append(
+                                HeadingNode(
+                                    id=self._bid(), level=level, text=text, runs=runs,
+                                    metadata=md,
+                                )
+                            )
+                        elif text or runs:
+                            blocks.append(
+                                ParagraphNode(id=self._bid(), runs=runs, text=text, metadata=md)
+                            )
+                    elif tag == "tbl":
+                        blocks.append(self._parse_table(child))
+            except Exception as e:  # 单文本框失败不拖垮段落（设计 §5）
+                _logger.warning("文本框解析失败，跳过: %s", e)
+        return blocks
 
     # ============ TOC（best-effort）============
     def _parse_table(self, tbl) -> TableNode:
@@ -491,6 +541,9 @@ class DocumentParser:
                     blocks.append(HeadingNode(id=self._bid(), level=level, text=text, runs=runs))
                 elif text or runs:
                     blocks.append(ParagraphNode(id=self._bid(), runs=runs, text=text))
+                tb = self._textbox_blocks(child)
+                if tb:
+                    blocks.extend(tb)
             elif tag == "tbl":
                 blocks.append(self._parse_table(child))
         return blocks

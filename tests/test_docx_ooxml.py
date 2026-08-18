@@ -268,3 +268,62 @@ def test_ole_without_preview_rel_still_placeholder():
     assert len(imgs) == 1
     assert imgs[0].alt == "OLE 对象 (Equation.3)"
     assert imgs[0].format is None
+
+
+# ---------- Task 5: 文本框 ----------
+
+
+def test_textbox_wps_choice_inline_expansion():
+    doc = f"""<w:document {DOC_NS}><w:body>
+      <w:p><w:r><mc:AlternateContent>
+        <mc:Choice Requires="wps">
+          <w:drawing><wp:anchor><wp:extent cx="5000000" cy="1000000"/><wp:docPr descr="红头"/>
+            <a:graphic><wps:txbx><w:txbxContent>
+              <w:p><w:r><w:t>广东某高速公路有限公司</w:t></w:r></w:p>
+              <w:p><w:r><w:t>关于XX项目的批复</w:t></w:r></w:p>
+            </w:txbxContent></wps:txbx></a:graphic></wp:anchor></w:drawing>
+        </mc:Choice>
+        <mc:Fallback><w:pict><v:shape><v:textbox><w:txbxContent>
+          <w:p><w:r><w:t>FB红头</w:t></w:r></w:p>
+        </w:txbxContent></v:textbox></v:shape></w:pict></mc:Fallback>
+      </mc:AlternateContent></w:r></w:p>
+      <w:p><w:r><w:t>正文第一段</w:t></w:r></w:p>
+    </w:body></w:document>"""
+    result = DocxExtractor().extract(make_docx(doc))
+    texts = [getattr(b, "text", "") for b in result.content]
+    assert texts[:3] == ["广东某高速公路有限公司", "关于XX项目的批复", "正文第一段"]
+    assert "FB红头" not in "".join(texts)  # Fallback 不双计
+    assert result.content[0].metadata.get("textbox") is True
+
+
+def test_textbox_vml_form():
+    doc = f"""<w:document {DOC_NS}><w:body>
+      <w:p><w:r><w:pict><v:shape><v:textbox><w:txbxContent>
+        <w:p><w:r><w:t>VML标题</w:t></w:r></w:p>
+      </w:txbxContent></v:textbox></v:shape></w:pict></w:r></w:p>
+      <w:p><w:r><w:t>正文</w:t></w:r></w:p>
+    </w:body></w:document>"""
+    result = DocxExtractor().extract(make_docx(doc))
+    assert result.content[0].text == "VML标题"
+    assert result.content[0].metadata.get("textbox") is True
+    assert result.content[1].text == "正文"
+
+
+def test_image_inside_textbox_no_leak():
+    doc = f"""<w:document {DOC_NS}><w:body>
+      <w:p><w:r><w:pict><v:shape><v:textbox><w:txbxContent>
+        <w:p><w:r><w:t>框内文字</w:t></w:r></w:p>
+        <w:p><w:r><w:drawing><wp:inline><wp:extent cx="100" cy="50"/>
+          <a:graphic><a:blip r:embed="rId7"/></a:graphic></wp:inline></w:drawing></w:r></w:p>
+      </w:txbxContent></v:textbox></v:shape></w:pict></w:r></w:p>
+      <w:p><w:r><w:t>正文</w:t></w:r></w:p>
+    </w:body></w:document>"""
+    result = DocxExtractor().extract(
+        make_docx(doc, media={"word/media/image1.png": b"PNG"}, rels_xml=_RELS_PNG)
+    )
+    imgs = [b for b in result.content if isinstance(b, ImageNode)]
+    # 不泄出为顶层重复块：恰 1 个，且位于文本框展开区内（第 2 块）
+    assert len(imgs) == 1
+    assert result.content[1] is imgs[0]
+    assert result.content[0].text == "框内文字"
+    assert result.content[2].text == "正文"
