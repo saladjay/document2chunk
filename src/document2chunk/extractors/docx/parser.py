@@ -121,7 +121,7 @@ class DocumentParser:
             blocks.append(ListNode(id=self._bid(), ordered=ordered, items=items))
             list_buf.clear()
 
-        for child in body:
+        for child in self._iter_body_parts(body):
             tag = etree.QName(child).localname
 
             if tag == "tbl":
@@ -196,6 +196,18 @@ class DocumentParser:
 
         flush_list()
         return blocks, self._toc_entries
+
+    def _iter_body_parts(self, body, depth: int = 0):
+        """body 子元素遍历；w:sdt 透明展开 sdtContent（上限 10 层，阶段B §4.6）。"""
+        if depth > 10:
+            return
+        for child in body:
+            if etree.QName(child).localname == "sdt":
+                content = child.find(w("sdtContent"))
+                if content is not None:
+                    yield from self._iter_body_parts(content, depth + 1)
+                continue
+            yield child
 
     @staticmethod
     def _ilvl_int(ilvl: str) -> int:

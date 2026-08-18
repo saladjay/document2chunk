@@ -400,3 +400,36 @@ def test_empty_notes_part_no_blocks():
     doc = f'<w:document {DOC_NS}><w:body><w:p><w:r><w:t>正文</w:t></w:r></w:p></w:body></w:document>'
     result = DocxExtractor().extract(make_docx(doc, footnotes_xml=shell))
     assert len(result.content) == 1 and result.content[0].text == "正文"
+
+
+# ---------- Task 7: sdt 展开 ----------
+
+
+def test_sdt_wrapped_toc_consumed():
+    doc = f"""<w:document {DOC_NS}><w:body>
+      <w:sdt>
+        <w:sdtPr><w:docPartObj><w:docPartGallery w:val="Table of Contents"/></w:docPartObj></w:sdtPr>
+        <w:sdtContent>
+          <w:p><w:r><w:fldChar w:fldCharType="begin"/></w:r><w:r><w:instrText> TOC \\o "1-3" </w:instrText></w:r></w:p>
+          <w:p><w:hyperlink><w:r><w:t>第一章 背景</w:t></w:r></w:hyperlink></w:p>
+          <w:p><w:r><w:fldChar w:fldCharType="end"/></w:r></w:p>
+        </w:sdtContent>
+      </w:sdt>
+      <w:p><w:r><w:t>正文</w:t></w:r></w:p>
+    </w:body></w:document>"""
+    result = DocxExtractor().extract(make_docx(doc))
+    texts = [getattr(b, "text", "") for b in result.content]
+    assert texts == ["正文"]  # TOC 条目不进 content（既有语义）
+    assert result.toc_entries and result.toc_entries[0].text == "第一章 背景"
+
+
+def test_sdt_wrapped_body_not_lost():
+    doc = f"""<w:document {DOC_NS}><w:body>
+      <w:sdt><w:sdtContent>
+        <w:p><w:r><w:t>sdt内段落一</w:t></w:r></w:p>
+        <w:p><w:r><w:t>sdt内段落二</w:t></w:r></w:p>
+      </w:sdtContent></w:sdt>
+    </w:body></w:document>"""
+    result = DocxExtractor().extract(make_docx(doc))
+    texts = [getattr(b, "text", "") for b in result.content]
+    assert texts == ["sdt内段落一", "sdt内段落二"]
