@@ -10,6 +10,9 @@ DC = "http://purl.org/dc/elements/1.1/"
 DCTERMS = "http://purl.org/dc/terms/"
 CP = "http://schemas.openxmlformats.org/package/2006/metadata/core-properties"
 EP = "http://schemas.openxmlformats.org/officeDocument/2006/extended-properties"
+M = "http://schemas.openxmlformats.org/officeDocument/2006/math"
+MC = "http://schemas.openxmlformats.org/markup-compatibility/2006"
+WPS = "http://schemas.microsoft.com/office/word/2010/wordprocessingShape"
 
 
 def w(tag: str) -> str:
