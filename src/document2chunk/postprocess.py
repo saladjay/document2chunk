@@ -24,7 +24,9 @@ import statistics
 from collections import Counter, defaultdict
 from typing import Any, Dict, List, Optional, Tuple
 
-from document2chunk.ir import BlockNode, DocumentMetadata, HeadingNode, ParagraphNode, TableNode, TocEntry
+from document2chunk.ir import (
+    BlockNode, DocumentMetadata, HeadingNode, ParagraphNode, SourceType, TableNode, TocEntry,
+)
 from document2chunk.pipeline.stages.merge import _LIST_MARKER_RE
 
 # ── 编号正则 ──
@@ -116,6 +118,16 @@ def _is_centered(node, page_widths: Optional[Dict[int, float]] = None) -> bool:
 def _prov_page(node) -> Optional[int]:
     prov = getattr(node, "provenance", None)
     return getattr(prov, "page_index", None) if prov else None
+
+
+def _max_font_size(node) -> Optional[float]:
+    """块内 runs 的最大字号（pt）。DOCX 路专用（runs 自带真实磅值）。"""
+    sizes = [
+        r.style.font_size
+        for r in (getattr(node, "runs", None) or [])
+        if getattr(getattr(r, "style", None), "font_size", None)
+    ]
+    return max(sizes) if sizes else None
 
 
 # 政策文种关键词（标题几乎总含其一；版头机关名不含）——主标题排序 tiebreaker
@@ -431,8 +443,10 @@ def merge_cross_page(
         removed.add(fi)
     content = [b for i, b in enumerate(content) if i not in removed]
 
-    # 2. 多行标题合并
-    content = _merge_headings(content)
+    # 2. 多行标题合并——仅限带页 provenance 的内容（PDF/OCR）。DOCX 无页概念，
+    # 折行标题本就是单块，相邻独立标题不应被拼坏（spec §4.5）。
+    if any(_prov_page(b) is not None for b in content):
+        content = _merge_headings(content)
     return content
 
 
@@ -475,16 +489,49 @@ def _promote_doc_title_paragraphs(
     return out
 
 
+def _promote_doc_title_paragraphs_docx(
+    content: List[BlockNode],
+    body_font_size: Optional[float],
+) -> List[BlockNode]:
+    """DOCX doc_title 段落提升：居中且字号≥基准，或字号≥基准×1.2。
+
+    DOCX 无页几何，但 run 自带真实磅值；公文标题（二号≈22pt）vs 正文
+    （三号≈16pt）比≈1.33。提升为 level=2 占位，主循环里胜者再定 H1。
+    """
+    if not body_font_size or body_font_size <= 0:
+        return content
+    out: List[BlockNode] = []
+    for b in content:
+        if isinstance(b, ParagraphNode):
+            txt = (b.text or "").strip()
+            fs = _max_font_size(b)
+            if txt and fs and not style_of(txt) and not RE_APPENDIX.match(txt):
+                ratio = fs / body_font_size
+                centered = bool((b.metadata or {}).get("centered"))
+                if (centered and ratio >= 1.0) or ratio >= DOC_TITLE_EDITED_RATIO:
+                    out.append(HeadingNode(
+                        id=b.id, level=2, text=txt, runs=b.runs,
+                        provenance=b.provenance, metadata=dict(b.metadata or {}),
+                    ))
+                    continue
+        out.append(b)
+    return out
+
+
 def _detect_doc_title_indices(
     content: List[BlockNode],
     body_h: float,
     page_widths: Optional[Dict[int, float]],
     use_height_fallback: bool,
+    *,
+    body_font_size: Optional[float] = None,
+    is_docx: bool = False,
 ) -> List[int]:
     """从已有 HeadingNode 检测 doc_title 候选索引。
 
-    高度检测（OCR ratio≥1.8 / edited 居中+ratio≥1.2）；无候选时取首个无编号
-    L1/L2 + len≥8（窄 fallback）。跨页重复文本（页面家具）排除。
+    高度检测（OCR ratio≥1.8 / edited 居中+ratio≥1.2）；DOCX 按字号比
+    （max font_size / body_font_size）+ metadata["centered"]。无候选时取首个
+    无编号 L1/L2 + len≥8（窄 fallback）。跨页重复文本（页面家具）排除。
     """
     heading_text_counts: "Counter[str]" = Counter(
         (b.text or "").strip() for b in content if isinstance(b, HeadingNode)
@@ -498,12 +545,19 @@ def _detect_doc_title_indices(
             continue
         if heading_text_counts[txt] > 1:
             continue
-        h = _bbox_h(b)
-        ratio = (h / body_h) if body_h else 0.0
-        centered = _is_centered(b, page_widths)
-        if (use_height_fallback and ratio >= DOC_TITLE_RATIO) or (
-            not use_height_fallback and centered and ratio >= DOC_TITLE_EDITED_RATIO
-        ):
+        if is_docx and body_font_size:
+            fs = _max_font_size(b)
+            ratio = (fs / body_font_size) if fs else 0.0
+            centered = bool((b.metadata or {}).get("centered"))
+            ok = (centered and ratio >= 1.0) or ratio >= DOC_TITLE_EDITED_RATIO
+        else:
+            h = _bbox_h(b)
+            ratio = (h / body_h) if body_h else 0.0
+            centered = _is_centered(b, page_widths)
+            ok = (use_height_fallback and ratio >= DOC_TITLE_RATIO) or (
+                not use_height_fallback and centered and ratio >= DOC_TITLE_EDITED_RATIO
+            )
+        if ok:
             indices.append(i)
     if not indices:
         for i, b in enumerate(content):
@@ -598,6 +652,7 @@ def calibrate_levels(
     page_widths: Optional[Dict[int, float]] = None,
     toc_entries: Optional[List[TocEntry]] = None,
     use_height_fallback: bool = True,
+    body_font_size: Optional[float] = None,
     _log: Optional[List[dict]] = None,
 ) -> List[BlockNode]:
     """文档级标题自适应定级 + doc_title→H1 + appendix reset + toc 覆盖。
@@ -618,29 +673,41 @@ def calibrate_levels(
     body_h = statistics.mode(para_hs) if para_hs else 0.0
 
     # 0b. doc_title 检测（已有 HeadingNode）
+    is_docx = metadata.source_type == SourceType.DOCX
     toc_map = _build_toc_mapping(toc_entries)
     doc_title_indices = _detect_doc_title_indices(
-        content, body_h, page_widths, use_height_fallback
+        content, body_h, page_widths, use_height_fallback,
+        body_font_size=body_font_size, is_docx=is_docx,
     )
     for i in doc_title_indices:
         b = content[i]
         _log_add(section="calibrate", block_id=b.id, text=(b.text or "")[:40],
                  detected="doc_title", action="→候选", reason="heading 检测")
 
-    # 0c. OCR 兜底（R2）：若没有任何 heading 级 doc_title，才提升 ParagraphNode 再检测。
-    # 仅 OCR 服务未把标题标成 `#`（留作段落）时触发；避免标题已是 HeadingNode 时
-    # 把多行正文段落（bbox 高、ratio≥1.8）误提升为竞争性 doc_title。
+    # 0c. 段落提升兜底：OCR 按高度比（R2）；DOCX 按字号比。仅当无 heading 级
+    # 候选时触发，避免竞争性 doc_title 误提升。
     if not doc_title_indices and use_height_fallback:
         content = _promote_doc_title_paragraphs(
             content, body_h, page_widths=page_widths, use_height_fallback=True
         )
         doc_title_indices = _detect_doc_title_indices(
-            content, body_h, page_widths, use_height_fallback
+            content, body_h, page_widths, use_height_fallback,
+            body_font_size=body_font_size, is_docx=is_docx,
         )
         for i in doc_title_indices:
             b = content[i]
             _log_add(section="calibrate", block_id=b.id, text=(b.text or "")[:40],
                      detected="doc_title(promoted)", action="→候选", reason="R2 段落提升")
+    if not doc_title_indices and is_docx:
+        content = _promote_doc_title_paragraphs_docx(content, body_font_size)
+        doc_title_indices = _detect_doc_title_indices(
+            content, body_h, page_widths, use_height_fallback,
+            body_font_size=body_font_size, is_docx=True,
+        )
+        for i in doc_title_indices:
+            b = content[i]
+            _log_add(section="calibrate", block_id=b.id, text=(b.text or "")[:40],
+                     detected="doc_title(promoted)", action="→候选", reason="DOCX 字号比提升")
 
     has_doc_title = len(doc_title_indices) > 0
     doc_title_set: set = set(doc_title_indices)
@@ -703,15 +770,24 @@ def calibrate_levels(
         st = style_of(txt)
 
         # toc 覆盖（精确/前缀，优先于栈序）
+        style_auth = (b.metadata or {}).get("heading_source") == "style"
         toc_lvl = _match_toc_level(txt, toc_map)
         if toc_lvl is not None:
             lvl = toc_lvl
             _log_add(section="calibrate", block_id=b.id, text=txt[:40],
                      detected="toc", action=f"→H{lvl}", reason="toc 映射覆盖")
+        elif style_auth:
+            # DOCX 样式层级权威（outlineLvl/pStyle 是作者意图）：保留原级，
+            # 仅随 doc_title 存在加 offset。优先于编号栈。
+            lvl = (b.level + level_offset) if has_doc_title else b.level
+            _log_add(section="calibrate", block_id=b.id, text=txt[:40],
+                     detected="style", action=f"→H{lvl}", reason="样式层级权威")
         elif st:
             if st not in style_levels:
-                style_levels[st] = next_style_level
-                next_style_level += 1
+                # 首见样式从「栈顶 +1」起分配（DOCX 伪标题在样式 H2 之后
+                # 应落 H3，issues5「一、应为三级」）；不回退低于已分配层
+                style_levels[st] = max(next_style_level, prev_level + 1)
+                next_style_level = style_levels[st] + 1
             lvl = style_levels[st]
             _log_add(section="calibrate", block_id=b.id, text=txt[:40],
                      detected=st, action=f"→H{lvl}", reason=f"栈序(offset={level_offset})")
@@ -723,7 +799,10 @@ def calibrate_levels(
             )
 
         lvl = max(1, min(lvl, 9))
-        if prev_level and lvl > prev_level + 1:
+        # 跳跃钳制豁免样式权威标题：outlineLvl/pStyle 是作者意图，同级样式
+        # 标题不得因 prev_level 深浅而分叉（doc_title offset 场景 2/3 不一致）。
+        # 1–9 的 min/max 钳制仍生效。
+        if not style_auth and prev_level and lvl > prev_level + 1:
             lvl = prev_level + 1
         prev_level = lvl
         b.level = lvl
@@ -800,6 +879,7 @@ def postprocess(
     page_widths: Optional[Dict[int, float]] = None,
     layout_data: Optional[list] = None,
     use_height_fallback: bool = True,
+    body_font_size: Optional[float] = None,
     _log: Optional[List[dict]] = None,
 ) -> Tuple[List[BlockNode], List[List[BlockNode]]]:
     """两路共用的全文档后处理入口。
@@ -815,7 +895,8 @@ def postprocess(
     blocks = calibrate_levels(
         blocks, metadata,
         page_widths=page_widths, toc_entries=toc_entries,
-        use_height_fallback=use_height_fallback, _log=_log,
+        use_height_fallback=use_height_fallback, body_font_size=body_font_size,
+        _log=_log,
     )
     main_content, attach_segments = split_attachments(blocks, page_geometry=page_geometry, _log=_log)
     # 多页重复表头合并（按段：主文/各附件分别合并，避免跨段误并）

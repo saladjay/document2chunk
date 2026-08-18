@@ -25,11 +25,17 @@ from document2chunk.ir import (
     TableRowNode,
     TocEntry,
 )
+from document2chunk.postprocess import style_of
 
 _HEADING_HEURISTIC = [
     (re.compile(r"^第[一二三四五六七八九十百千]+[章篇部]"), 1),
     (re.compile(r"^\d+(\.\d+)*\s*\S"), 2),
 ]
+
+# 伪标题：句尾出现这些字符 = 正文，不提升
+_SENTENCE_END = "。！？!?；;：:"
+# 伪标题文本长度上限（对齐 mineru2doc 降误检阈值）
+_PSEUDO_HEADING_MAX_LEN = 40
 
 
 class _Numbering:
@@ -130,6 +136,13 @@ class DocumentParser:
                 continue
 
             kind, level, runs, text, list_info, images = self._classify(child)
+            ppr0 = child.find(w("pPr"))
+            pstyle0 = None
+            if ppr0 is not None:
+                ps0 = ppr0.find(w("pStyle"))
+                if ps0 is not None:
+                    pstyle0 = wa(ps0, "val")
+            _, hsrc = self._heading_level_source(child, pstyle0, text)
 
             # 图片：先冲刷列表，独立成块
             if images:
@@ -138,9 +151,12 @@ class DocumentParser:
 
             if kind == "heading":
                 flush_list()
-                blocks.append(
-                    HeadingNode(id=self._bid(), level=level, text=text, runs=runs)
-                )
+                hmd = {"heading_source": hsrc or "heuristic"}
+                if self._is_centered(child):
+                    hmd["centered"] = True
+                blocks.append(HeadingNode(
+                    id=self._bid(), level=level, text=text, runs=runs, metadata=hmd,
+                ))
             elif kind == "list":
                 num_id, ilvl = list_info
                 # numId 变化 → 先冲刷
@@ -151,7 +167,16 @@ class DocumentParser:
             else:
                 flush_list()
                 if text or runs:
-                    blocks.append(ParagraphNode(id=self._bid(), runs=runs, text=text))
+                    md: dict = {"centered": True} if self._is_centered(child) else {}
+                    if self._is_pseudo_heading(text):
+                        blocks.append(HeadingNode(
+                            id=self._bid(), level=2, text=text, runs=runs,
+                            metadata={**md, "heading_source": "heuristic"},
+                        ))
+                    else:
+                        blocks.append(ParagraphNode(
+                            id=self._bid(), runs=runs, text=text, metadata=md,
+                        ))
 
         flush_list()
         return blocks, self._toc_entries
@@ -185,6 +210,11 @@ class DocumentParser:
         return kind, level, runs, text, list_info, images
 
     def _detect_heading(self, p, pstyle_id, text) -> Optional[int]:
+        level, _ = self._heading_level_source(p, pstyle_id, text)
+        return level
+
+    def _heading_level_source(self, p, pstyle_id, text) -> Tuple[Optional[int], Optional[str]]:
+        """(level, source)：source = style（outlineLvl/pStyle）| heuristic（正则）| None。"""
         ppr = p.find(w("pPr"))
         if ppr is not None:
             ol = ppr.find(w("outlineLvl"))
@@ -193,15 +223,15 @@ class DocumentParser:
                 if val and val.isdigit():
                     n = int(val)
                     if 0 <= n <= 8:
-                        return n + 1
+                        return n + 1, "style"
             lvl = self._styles.heading_level(pstyle_id)
             if lvl:
-                return lvl
+                return lvl, "style"
         if self._heuristic and text:
             for rx, lvl in _HEADING_HEURISTIC:
                 if rx.match(text.strip()):
-                    return lvl
-        return None
+                    return lvl, "heuristic"
+        return None, None
 
     def _list_info(self, ppr) -> Optional[Tuple[str, str]]:
         if ppr is None:
@@ -216,6 +246,23 @@ class DocumentParser:
         num_id = wa(nid_el, "val") or ""
         ilvl = (wa(ilvl_el, "val") if ilvl_el is not None else None) or "0"
         return (num_id, ilvl)
+
+    @staticmethod
+    def _is_centered(p) -> bool:
+        ppr = p.find(w("pPr"))
+        if ppr is None:
+            return False
+        jc = ppr.find(w("jc"))
+        return jc is not None and wa(jc, "val") in ("center", "centre")
+
+    def _is_pseudo_heading(self, text: str) -> bool:
+        """无样式短编号段落 → 伪标题候选（交给 calibrate 栈定级）。"""
+        t = (text or "").strip()
+        if not t or len(t) > _PSEUDO_HEADING_MAX_LEN:
+            return False
+        if t[-1] in _SENTENCE_END:
+            return False
+        return style_of(t) is not None
 
     # ============ runs ============
     def _parse_runs(self, p, pstyle_id) -> Tuple[List[InlineNode], str]:
