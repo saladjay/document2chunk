@@ -1719,3 +1719,26 @@ Co-Authored-By: Claude <noreply@anthropic.com>"
 3. ✅ 零频率记录（设计文档 §1.3：脚注专属增强/修订/批注/复杂表截图/EMF转PNG 不做）
 4. ✅ pytest 全绿、PDF/OCR 零改动
 5. ✅ spec.md 同步（Task 9 Step 3）
+
+## 执行后记（2026-08-18 终审分诊）
+
+实际执行 9 任务 + 3 计划外修复轮（Task1 注释节点防御 cbecfa1+1e5fd1b、
+Task5 嵌套文本框 b92a864、终审 RunNode 四点补齐 de50870）+ 真实样本
+3 类整文件崩溃降级 f13879b（799 样本 0 崩溃）。终态 **208 passed**。
+任务级/终审评审全部 Approved，Critical 已修。
+
+**fix-later 清单**（终审分诊为「修后记录」，合并后按需处理，勿丢）：
+
+- postprocess 提升路径同类崩溃风险：`_promote_doc_title*` 从
+  ParagraphNode.runs 整体拷贝构造 HeadingNode，带 InlineFormula/Hyperlink
+  的居中大字段落理论上可触发 ValidationError（零改动约束未修；799 样本
+  未触发）。建议后续在提升处过滤或放宽 HeadingNode.runs 类型
+- 设计偏差记录：run 级 sdt 未展开（设计 §4.6 一句话，语料无此形态）；
+  rel 解析泛化未做（设计 §3 一句话，无特性需要）；深度超 10 层静默截断
+  无 WARN（设计 §5 承诺了 WARN）
+- 测试加固：cell 公式分支、omml_text 兜底、OLE WARN 路径、嵌套
+  AlternateContent、footnotes 缺失分支无直接测试；`type(r).__name__`
+  改 isinstance；`"E" in h.text` 断言收紧；image_dir=None 测试改用含媒体
+  fixture；model_dump 路径断言仅覆盖 Windows 反斜杠形态
+- 小项：header_elements 排序、notes.py part 根级注释 isinstance 守卫、
+  文本框内图片/表格补 textbox 元数据、spotcheck 脚本 try 包裹每样本
