@@ -1741,4 +1741,6 @@ Task5 嵌套文本框 b92a864、终审 RunNode 四点补齐 de50870）+ 真实�
   改 isinstance；`"E" in h.text` 断言收紧；image_dir=None 测试改用含媒体
   fixture；model_dump 路径断言仅覆盖 Windows 反斜杠形态
 - 小项：header_elements 排序、notes.py part 根级注释 isinstance 守卫、
-  文本框内图片/表格补 textbox 元数据、spotcheck 脚本 try 包裹每样本
+  文本框内图片/表格补 textbox 元数据、spotcheck 脚本 try 包裹每样本、
+  de50870 新 WARN 取头循环的 QName 注释守卫（except 内二次抛出的双重故障，
+  语料无此形态）
