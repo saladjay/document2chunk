@@ -9,7 +9,6 @@ from typing import List, Optional, Tuple
 from lxml import etree
 
 from document2chunk.extractors.docx import embedded
-from document2chunk.extractors.docx import notes
 from document2chunk.extractors.docx._ooxml import A, WP, w, ra, wa
 from document2chunk.extractors.docx.embedded import omml_to_latex
 from document2chunk.extractors.docx.styles import StyleRegistry, parse_rpr
