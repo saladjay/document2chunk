@@ -4,7 +4,7 @@
 
 **Goal:** 补齐 DOCX 解析器对 OOXML 的覆盖（AlternateContent 去重/文本框/OMML 公式/OLE/尾注脚注/sdt/媒体落盘/页眉元数据），全部进统一 IR。
 
-**Architecture:** 分层扩展——`embedded.py`（去重遍历 + 嵌入物解析）、`notes.py`（尾注脚注）、parser 只加分派点、`package_reader` 扩 part 读取、extractor 加 `image_dir` 与 `metadata.custom`。IR models.py 零改动。
+**Architecture:** 分层扩展——`embedded.py`（去重遍历 + 嵌入物解析）、`notes.py`（尾注脚注）、parser 只加分派点、`package_reader` 扩 part 读取、extractor 加 `image_dir`/`metadata.custom`/postprocess 后尾注追加。IR models.py 与 postprocess.py 零改动。已并入阶段 A（heading_source 契约、postprocess 接入）。
 
 **Tech Stack:** Python ≥3.10 + lxml + pydantic v2（禁止 python-docx）。
 
@@ -12,12 +12,14 @@
 
 ## Global Constraints
 
-- 分支 `worktree-docx-ooxml-coverage`（worktree `.claude/worktrees/docx-ooxml-coverage` 已就绪，勿新建）
-- `src/document2chunk/ir/models.py` 零改动；PDF/OCR 代码零改动；`tests/test_docx.py` 保持不动（回归锁）
+- 分支 `worktree-docx-ooxml-coverage`（worktree `.claude/worktrees/docx-ooxml-coverage` 已就绪，勿新建）；已合并阶段 A（main@2739868，merge d1a1847）
+- `src/document2chunk/ir/models.py` 零改动；`postprocess.py` 零改动（三路共享）；PDF/OCR 代码零改动；`tests/test_docx.py` 与 `tests/test_postprocess.py` 保持不动（回归锁）
+- **阶段 A 接口契约**：parser 主循环的 heading 产出带 `heading_source`/`centered` metadata 与伪标题预扫描（`_is_pseudo_heading`）——新增的 heading 产出路径（文本框展开）必须同样携带；extractor 调 `postprocess()` 不得删除
+- **postprocess 交互**（设计 §7）：filter_noise/merge_cross_page 对 DOCX 全 no-op；calibrate_levels 只动 HeadingNode；尾注内容必须在 postprocess **之后**追加（否则 split_attachments 会把尾注划进末尾附件段）
 - 新测试一律进 `tests/test_docx_ooxml.py`；命令一律 `uv run pytest ...`
 - 错误处理风格：WARN + 跳过，不中断（spec §3.8）；日志 `logging.getLogger(__name__)`
 - 提交信息中文 conventional commits，结尾加 `Co-Authored-By: Claude <noreply@anthropic.com>`
-- 基线：`uv run pytest -q` = **165 passed**（环境已补 numpy，非 pyproject 声明）
+- 基线：`uv run pytest -q` = **180 passed**（含阶段 A 的 15 个；环境已补 numpy，非 pyproject 声明）
 
 ---
 
@@ -260,7 +262,7 @@ Expected: 4 PASSED
 - [ ] **Step 5: 全量回归**
 
 Run: `uv run pytest -q`
-Expected: 169 passed（165 + 4）
+Expected: 184 passed（180 + 4）
 
 - [ ] **Step 6: Commit**
 
@@ -390,7 +392,7 @@ Expected: 2 PASSED
 
 - [ ] **Step 5: 全量回归 + 提交**
 
-Run: `uv run pytest -q` → Expected: 171 passed
+Run: `uv run pytest -q` → Expected: 186 passed
 
 ```bash
 git add src/document2chunk/extractors/docx/package_reader.py tests/test_docx_ooxml.py
@@ -546,31 +548,18 @@ def omml_text(el) -> str:
 
 - [ ] **Step 4: 实现 parser 分派（`parser.py`）**
 
-4a. 顶部 import 区改为（新增 embedded、FormulaNode、InlineFormulaNode）：
+4a. 顶部 import 区**增量修改**（不动既有 imports，含阶段 A 的 `from document2chunk.postprocess import style_of`）：
+
+新增两行（放 lxml import 之后即可）：
 
 ```python
-from document2chunk.extractors.docx import embedded
-from document2chunk.extractors.docx._ooxml import A, WP, w, ra, wa
-from document2chunk.extractors.docx.styles import StyleRegistry, parse_rpr
-from document2chunk.ir import (
-    BlockNode,
-    FormulaNode,
-    HeadingNode,
-    HyperlinkNode,
-    ImageNode,
-    InlineFormulaNode,
-    InlineNode,
-    ListItemNode,
-    ListNode,
-    ParagraphNode,
-    RunNode,
-    RunProperties,
-    TableCellNode,
-    TableNode,
-    TableRowNode,
-    TocEntry,
-)
+from document2chunk.extractors.docx import embedded, notes
+from document2chunk.extractors.docx.embedded import omml_to_latex
 ```
+
+（`notes` 为 Task 6 引入，此处一并写入避免二次改动；`embedded` 供 Task 4/5 的 `iter_content`/`content_children`/`inside_textbox` 用。）
+
+`from document2chunk.ir import (...)` 元组内按字母序插入两项：`FormulaNode,`（`BlockNode` 之后）、`InlineFormulaNode,`（`ImageNode` 之后）。
 
 4b. `_classify` 方法开头插入公式段判定：
 
@@ -668,15 +657,7 @@ from document2chunk.ir import (
         return out
 ```
 
-`omml_to_latex` 在 parser 内以裸名调用（上面 4b/4c 代码已按裸名写），顶部 import 补一行即可。parser 顶部最终为：
-
-```python
-from document2chunk.extractors.docx import embedded, notes
-from document2chunk.extractors.docx._ooxml import A, WP, w, ra, wa
-from document2chunk.extractors.docx.embedded import omml_to_latex
-```
-
-（`notes` 是 Task 6 引入，此处一并写出避免二次改动；`embedded` 供 Task 4/5 的 `iter_content`/`content_children`/`inside_textbox` 用。）
+`omml_to_latex` 在 parser 内以裸名调用（上面 4b/4c 代码已按裸名写），import 见 4a。
 
 4d. `_parse_run`：遍历改 `content_children`，加 oMath 文本分支：
 
@@ -725,7 +706,7 @@ Expected: 3 PASSED
 
 - [ ] **Step 6: 全量回归 + 提交**
 
-Run: `uv run pytest -q` → Expected: 174 passed
+Run: `uv run pytest -q` → Expected: 189 passed
 
 ```bash
 git add src/document2chunk/extractors/docx/embedded.py src/document2chunk/extractors/docx/parser.py tests/test_docx_ooxml.py
@@ -912,7 +893,7 @@ Expected: 2 PASSED
 
 - [ ] **Step 6: 全量回归 + 提交**
 
-Run: `uv run pytest -q` → Expected: 176 passed
+Run: `uv run pytest -q` → Expected: 191 passed
 
 ```bash
 git add src/document2chunk/extractors/docx/embedded.py src/document2chunk/extractors/docx/parser.py tests/test_docx_ooxml.py
@@ -1034,20 +1015,27 @@ Expected: 3 FAILED（文本框内容丢失 / 图片泄漏双计）
                         kind, level, runs, text, list_info, images = self._classify(child)
                         if images:
                             blocks.extend(images)
+                        md = {"textbox": True}
+                        if self._is_centered(child):
+                            md["centered"] = True
                         if kind == "formula":
                             blocks.append(
-                                FormulaNode(id=self._bid(), latex=text or None, metadata={"textbox": True})
+                                FormulaNode(id=self._bid(), latex=text or None, metadata=md)
                             )
                         elif kind == "heading" and text:
+                            _, hsrc = self._heading_level_source(
+                                child, self._paragraph_style(child), text
+                            )
+                            md["heading_source"] = hsrc or "heuristic"  # 阶段A 契约（设计 §7）
                             blocks.append(
                                 HeadingNode(
                                     id=self._bid(), level=level, text=text, runs=runs,
-                                    metadata={"textbox": True},
+                                    metadata=md,
                                 )
                             )
                         elif text or runs:
                             blocks.append(
-                                ParagraphNode(id=self._bid(), runs=runs, text=text, metadata={"textbox": True})
+                                ParagraphNode(id=self._bid(), runs=runs, text=text, metadata=md)
                             )
                     elif tag == "tbl":
                         blocks.append(self._parse_table(child))
@@ -1083,7 +1071,7 @@ Expected: 3 PASSED
 
 - [ ] **Step 5: 全量回归 + 提交**
 
-Run: `uv run pytest -q` → Expected: 179 passed
+Run: `uv run pytest -q` → Expected: 194 passed
 
 ```bash
 git add src/document2chunk/extractors/docx/parser.py tests/test_docx_ooxml.py
@@ -1098,7 +1086,8 @@ Co-Authored-By: Claude <noreply@anthropic.com>"
 
 **Files:**
 - Create: `src/document2chunk/extractors/docx/notes.py`
-- Modify: `src/document2chunk/extractors/docx/parser.py`
+- Modify: `src/document2chunk/extractors/docx/parser.py`（仅 marker 分支）
+- Modify: `src/document2chunk/extractors/docx/extractor.py`（postprocess 后追加内容块）
 - Test: `tests/test_docx_ooxml.py`
 
 **Interfaces:**
@@ -1106,7 +1095,7 @@ Co-Authored-By: Claude <noreply@anthropic.com>"
 - Produces:
   - `notes.parse_notes(reader, kind: str) -> List[ParagraphNode]`（kind ∈ {"endnote","footnote"}；跳过 separator 条目；按 id 数值序；块 id=`note_{kind}_{id}`、`metadata={"note":{"type":kind,"id":id}}`、text=`"[尾注N] {内容}"`）
   - `_parse_run`：`footnoteReference`/`endnoteReference` → run 文本追加 `[尾注N]`/`[脚注N]`
-  - `parse()` 末尾追加 endnote+footnote 块（先尾注后脚注）
+  - `extractor.extract()`：postprocess 返回 main_content 之后追加 endnote+footnote 块（**必须后置**：split_attachments 会把 postprocess 前追加的块划进末尾附件段）
 
 - [ ] **Step 1: 写失败测试（追加）**
 
@@ -1224,11 +1213,7 @@ def parse_notes(reader, kind: str) -> List[ParagraphNode]:
 
 - [ ] **Step 4: 实现 parser**
 
-4a. 顶部加 import：
-
-```python
-from document2chunk.extractors.docx import notes
-```
+4a. parser 顶部已有 `from document2chunk.extractors.docx import embedded, notes`（Task 3 4a 预置），无需再加。
 
 4b. `_parse_run` 循环加标记分支（在 `elif tag == "oMath":` 之后）：
 
@@ -1239,16 +1224,19 @@ from document2chunk.extractors.docx import notes
                 parts.append(f"[{label}{nid}]")
 ```
 
-4c. `parse()` 末尾（`flush_list()` 之后、`return` 之前）：
+4c. `extractor.py`：在 postprocess 调用之后（`main_content, attach_segments = postprocess(...)` 之后、构建 `result` 之前）插入：
 
 ```python
-        flush_list()
-        # 尾注/脚注内容：文末集中（阶段B设计 §4.5）
-        if self._reader is not None:
-            blocks.extend(notes.parse_notes(self._reader, "endnote"))
-            blocks.extend(notes.parse_notes(self._reader, "footnote"))
-        return blocks, self._toc_entries
+        # 尾注/脚注内容：正文末尾集中。必须在 postprocess 之后——
+        # 若在之前追加，split_attachments 会把尾注划进文档末尾的附件段（设计 §4.5）
+        main_content = (
+            main_content
+            + notes.parse_notes(reader, "endnote")
+            + notes.parse_notes(reader, "footnote")
+        )
 ```
+
+import 区追加：`from document2chunk.extractors.docx import notes`（放在 parser import 之后）。
 
 - [ ] **Step 5: 运行验证通过**
 
@@ -1257,10 +1245,10 @@ Expected: 3 PASSED
 
 - [ ] **Step 6: 全量回归 + 提交**
 
-Run: `uv run pytest -q` → Expected: 182 passed
+Run: `uv run pytest -q` → Expected: 197 passed
 
 ```bash
-git add src/document2chunk/extractors/docx/notes.py src/document2chunk/extractors/docx/parser.py tests/test_docx_ooxml.py
+git add src/document2chunk/extractors/docx/notes.py src/document2chunk/extractors/docx/parser.py src/document2chunk/extractors/docx/extractor.py tests/test_docx_ooxml.py
 git commit -m "feat(docx): 尾注/脚注引用标记 + 内容文末集中（notes.py）
 
 Co-Authored-By: Claude <noreply@anthropic.com>"
@@ -1350,7 +1338,7 @@ Expected: 2 PASSED
 
 - [ ] **Step 5: 全量回归 + 提交**
 
-Run: `uv run pytest -q` → Expected: 184 passed
+Run: `uv run pytest -q` → Expected: 199 passed
 
 ```bash
 git add src/document2chunk/extractors/docx/parser.py tests/test_docx_ooxml.py
@@ -1419,37 +1407,32 @@ def test_header_text_metadata_and_content_lock():
 Run: `uv run pytest tests/test_docx_ooxml.py -v -k "image_dir or header_text"`
 Expected: 3 FAILED（`TypeError: extract() got an unexpected keyword argument 'image_dir'` 等）
 
-- [ ] **Step 3: 实现（`extractor.py` 整体替换为）**
+- [ ] **Step 3: 实现（`extractor.py` 增量修改，保留阶段 A 的 postprocess 接入）**
+
+3a. import 区增量修改：
 
 ```python
-"""DocxExtractor —— .docx → ExtractionResult（lxml 直读，provenance 全 None）。"""
+import logging  # 顶部 stdlib 区
+from typing import Iterator, List, Optional  # List/Optional 已有，追加 Iterator
+```
 
-from __future__ import annotations
-
-import logging
-from pathlib import Path
-from typing import Iterator, Optional
-
-from document2chunk.extractors.docx.package_reader import PackageReader
-from document2chunk.extractors.docx.parser import DocumentParser
-from document2chunk.extractors.docx.styles import StyleRegistry
-from document2chunk.ir import (
+```python
+from document2chunk.ir import (   # 既有元组内追加 ImageNode、TableNode 两项（字母序）
+    BlockNode,
     DocumentMetadata,
     ExtractionResult,
     ImageNode,
     ListNode,
+    ParagraphNode,
     SourceType,
     TableNode,
-    TocEntry,
 )
+_logger = logging.getLogger(__name__)  # import 区之后
+```
 
-_logger = logging.getLogger(__name__)
+3b. 模块级追加（`_body_font_size` 之后）：
 
-
-class InvalidDocxError(Exception):
-    """无效的 .docx 文件。"""
-
-
+```python
 def _iter_images(blocks) -> Iterator[ImageNode]:
     """递归收集块序列中的 ImageNode（含表格/列表嵌套）。"""
     for b in blocks:
@@ -1483,13 +1466,11 @@ def _export_media(reader: PackageReader, blocks, image_dir) -> None:
             (out / name).write_bytes(data)
         except OSError as e:
             _logger.warning("docx 媒体落盘失败 %s: %s", name, e)
+```
 
+3c. `extract` 签名追加 kwarg：
 
-class DocxExtractor:
-    """可编辑 .docx 提取器。"""
-
-    source_type: SourceType = SourceType.DOCX
-
+```python
     def extract(
         self,
         source,
@@ -1498,39 +1479,19 @@ class DocxExtractor:
         heuristic_headings: bool = False,
         image_dir=None,
     ) -> ExtractionResult:
-        reader = PackageReader(source)
+```
 
-        doc_elem = reader.document_element()
-        if doc_elem is None:
-            raise InvalidDocxError("缺少 word/document.xml，不是有效的 .docx")
+3d. `blocks, toc_entries = parser.parse(doc_elem)` 之后、`core = reader.core_properties()` 之前插入（用 parser 的 blocks：postprocess 前的全集）：
 
-        registry = StyleRegistry()
-        registry.load(reader.styles_element())
-
-        parser = DocumentParser(
-            registry,
-            numbering_elem=reader.numbering_element(),
-            reader=reader,
-            heuristic_headings=heuristic_headings,
-        )
-        blocks, toc_entries = parser.parse(doc_elem)
-
+```python
         # 媒体落盘（仅被引用媒体；IR 不引磁盘路径）
         if image_dir is not None:
             _export_media(reader, blocks, image_dir)
+```
 
-        core = reader.core_properties()
-        source_file = Path(source).name if isinstance(source, (str, Path)) else None
+3e. `metadata = _meta()` 之后插入：
 
-        metadata = DocumentMetadata(
-            source_type=SourceType.DOCX,
-            source_file=source_file,
-            title=core.get("title"),
-            author=core.get("author"),
-            created=core.get("created"),
-            modified=core.get("modified"),
-        )
-
+```python
         # 页眉文本 → metadata.custom（不进正文，阶段B §4.8）
         header_lines = [
             " ".join("".join(h.itertext()).split()) for h in reader.header_elements()
@@ -1538,13 +1499,9 @@ class DocxExtractor:
         header_text = " / ".join(x for x in header_lines if x)[:200]
         if header_text:
             metadata.custom["docx"] = {"header_text": header_text}
-
-        return ExtractionResult(
-            content=blocks,
-            metadata=metadata,
-            toc_entries=toc_entries if toc_entries else None,
-        )
 ```
+
+注意：Task 6 已在本文件加过 notes 追加（postprocess 之后）与 `import notes`，本任务不触碰那段。
 
 - [ ] **Step 4: 运行验证通过**
 
@@ -1553,7 +1510,7 @@ Expected: 3 PASSED
 
 - [ ] **Step 5: 全量回归 + 提交**
 
-Run: `uv run pytest -q` → Expected: 187 passed
+Run: `uv run pytest -q` → Expected: 202 passed
 
 ```bash
 git add src/document2chunk/extractors/docx/extractor.py tests/test_docx_ooxml.py
@@ -1742,7 +1699,7 @@ Expected: 5 个特性各输出一段 markdown。**人工核对**（执行者自�
 - [ ] **Step 5: 全量回归**
 
 Run: `uv run pytest -q`
-Expected: 188 passed（165 基线 + 23 新测试），无 FAILED
+Expected: 203 passed（180 基线 + 23 新测试），无 FAILED
 
 - [ ] **Step 6: 提交**
 

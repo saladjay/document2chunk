@@ -1,9 +1,9 @@
 # 阶段 B 设计：DOCX OOXML 覆盖面补齐
 
-> 日期：2026-08-17
+> 日期：2026-08-17（2026-08-18 修订：并入阶段 A main@2739868 接口）
 > 输入：`2026-08-17-docx-ooxml-coverage-phase-b-handoff.md`（需求交接）
-> 前置状态：阶段 A 未实施（用户决定跳过前置直接开工 B）；本设计基于
-> main@f89dbcf 现状，不依赖阶段 A 产物
+> 前置状态：开工时阶段 A 未实施，设计基于 main@f89dbcf；执行前阶段 A
+> 已合入 main（2739868），本分支已合并并按其接口修订（见 §7）
 
 ## 1. 目标与范围
 
@@ -156,7 +156,10 @@ IR models.py: 零改动
 ### 4.5 尾注/脚注
 
 - 引用点：run 遇 `w:endnoteReference`/`w:footnoteReference` →
-  文本位置插标记 `[尾注N]`/`[脚注N]`（N=w:id）
+  文本位置插标记 `[尾注N]`/`[脚注N]`（N=w:id）；内容块由
+  **extractor 在 postprocess 之后追加**（2026-08-18 修订：若在
+  postprocess 前追加，split_attachments 会把尾注划进文档末尾的
+  附件段而非正文末尾）
 - 内容：part 内非 separator 条目 → `ParagraphNode +
   metadata={"note": {"type": "endnote", "id": N}}`
 - **插入位置（用户已选）：文档末尾集中**——单文件最多 61 处引用，
@@ -229,13 +232,17 @@ body 遇 `w:sdt` → 取 `sdtContent` 子元素按 body 逻辑处理（TOC
 4. pytest 全绿；PDF/OCR 零改动即无回归
 5. `openspec/specs/docx-extractor/spec.md` 同步更新（列入实现计划）
 
-## 7. 与阶段 A 的兼容
+## 7. 与阶段 A 的兼容（2026-08-18 修订：阶段 A 已合入 main@2739868）
 
-- 阶段 A 未实施：本设计不碰 `postprocess.py`、不引入
-  `heading_source` 依赖
-- heading 产出路径不动（只在 run/body 遍历层加分支），阶段 A 合入
-  后无冲突；阶段 A 落地时其 `calibrate_levels` 可消费本设计展开的
-  文本框标题块
+- 阶段 A 已落地：extractor 调 `postprocess()`（filter_noise →
+  merge_cross_page → calibrate_levels → split_attachments），parser
+  产出 `heading_source`/`centered` 标记与伪标题预扫描
+- 交互矩阵：filter_noise / merge_cross_page 需 provenance，DOCX 全
+  no-op；calibrate_levels 只动 HeadingNode——文本框红头标题参与
+  doc_title/定级是期望行为；尾注/公式/图片直通
+- `heading_source` 契约保持：文本框展开的 HeadingNode 同样携带
+  `heading_source`（+`centered`），与主循环一致
+- 尾注内容在 postprocess 之后追加（§4.5），不参与附件拆分
 - 公共底线：`postprocess.py` 为三路共享，本阶段不改它
 
 ## 8. Worktree 策略
