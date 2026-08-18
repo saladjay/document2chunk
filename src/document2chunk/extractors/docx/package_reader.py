@@ -45,6 +45,22 @@ class PackageReader:
     def numbering_element(self) -> Optional[etree._Element]:
         return self.read_xml("word/numbering.xml")
 
+    def endnotes_element(self) -> Optional[etree._Element]:
+        return self.read_xml("word/endnotes.xml")
+
+    def footnotes_element(self) -> Optional[etree._Element]:
+        return self.read_xml("word/footnotes.xml")
+
+    def header_elements(self) -> list:
+        """word/header*.xml 列表（页眉文本进 metadata，不进正文）。"""
+        out = []
+        for name in self._zip.namelist():
+            if name.startswith("word/header"):
+                el = self.read_xml(name)
+                if el is not None:
+                    out.append(el)
+        return out
+
     def core_properties(self) -> dict:
         root = self.read_xml("docProps/core.xml")
         props = {}
@@ -65,6 +81,13 @@ class PackageReader:
 
     def media_for_rel(self, rel_id: str) -> Optional[Tuple[bytes, str]]:
         """r:embed → (image_bytes, ext)。"""
+        info = self.media_info_for_rel(rel_id)
+        if info is None:
+            return None
+        return info[1], info[2]
+
+    def media_info_for_rel(self, rel_id: str) -> Optional[Tuple[str, bytes, str]]:
+        """r:id/r:embed → (媒体 zip 内原名, bytes, ext)。"""
         rels = self.read_xml("word/_rels/document.xml.rels")
         if rels is None:
             return None
@@ -74,8 +97,9 @@ class PackageReader:
                 target = rel.get("Target") or ""
                 # Target 形如 "media/image1.png"（相对 word/）
                 data = self.read_bytes("word/" + target)
+                if data is None:
+                    return None
+                name = target.rsplit("/", 1)[-1]
                 ext = target.rsplit(".", 1)[-1].lower() if "." in target else ""
-                if data is not None:
-                    return data, ext
-                return None
+                return name, data, ext
         return None

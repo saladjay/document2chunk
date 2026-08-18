@@ -140,3 +140,41 @@ def test_content_children_skips_comment_nodes():
     p = etree.fromstring(xml.encode())
     kids = [etree.QName(c).localname for c in content_children(p)]
     assert kids == ["r"]
+
+
+# ---------- Task 2: package_reader 扩展 ----------
+
+
+_RELS_PNG = f"""<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId7" Type="{R}/image" Target="media/image1.png"/>
+</Relationships>"""
+
+
+def _reader(data: bytes):
+    from document2chunk.extractors.docx.package_reader import PackageReader
+
+    return PackageReader(data)
+
+
+def test_reader_notes_and_header_parts():
+    doc = f'<w:document {DOC_NS}><w:body><w:p><w:r><w:t>x</w:t></w:r></w:p></w:body></w:document>'
+    data = make_docx(
+        doc,
+        endnotes_xml=f'<w:endnotes {DOC_NS}><w:endnote w:id="1"><w:p><w:r><w:t>e1</w:t></w:r></w:p></w:endnote></w:endnotes>',
+        header_parts={"word/header1.xml": f'<w:hdr {DOC_NS}><w:p><w:r><w:t>页眉</w:t></w:r></w:p></w:hdr>'},
+    )
+    r = _reader(data)
+    assert r.endnotes_element() is not None
+    assert r.footnotes_element() is None
+    hs = r.header_elements()
+    assert len(hs) == 1
+
+
+def test_reader_media_info_for_rel():
+    doc = f'<w:document {DOC_NS}><w:body><w:p/></w:body></w:document>'
+    data = make_docx(doc, media={"word/media/image1.png": b"PNGDATA"}, rels_xml=_RELS_PNG)
+    r = _reader(data)
+    assert r.media_info_for_rel("rId7") == ("image1.png", b"PNGDATA", "png")
+    assert r.media_info_for_rel("rId999") is None
+    # 既有接口行为不变
+    assert r.media_for_rel("rId7") == (b"PNGDATA", "png")
