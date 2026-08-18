@@ -121,7 +121,7 @@ def test_inside_textbox():
 
     xml = f"""<w:p {DOC_NS}><w:r><w:pict><v:shape><v:textbox><w:txbxContent>
       <w:p><w:r><w:t>x</w:t></w:r></w:p>
-    </w:txbxContent></v:textbox></v:shape></v:pict></w:r></w:p>"""
+    </w:txbxContent></v:textbox></v:shape></w:pict></w:r></w:p>"""
     p = etree.fromstring(xml.encode())
     inner_p = p.find(f".//{{{W}}}p")
     assert inner_p is not None and p is not inner_p
