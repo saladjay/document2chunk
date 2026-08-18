@@ -433,3 +433,39 @@ def test_sdt_wrapped_body_not_lost():
     result = DocxExtractor().extract(make_docx(doc))
     texts = [getattr(b, "text", "") for b in result.content]
     assert texts == ["sdt内段落一", "sdt内段落二"]
+
+
+# ---------- Task 8: image_dir / 页眉 ----------
+
+
+def test_image_dir_exports_media(tmp_path):
+    doc = f"""<w:document {DOC_NS}><w:body>
+      <w:p><w:r><w:drawing><wp:inline><wp:extent cx="100" cy="50"/><wp:docPr descr="logo"/>
+        <a:graphic><a:blip r:embed="rId7"/></a:graphic></wp:inline></w:drawing></w:r></w:p>
+    </w:body></w:document>"""
+    result = DocxExtractor().extract(
+        make_docx(doc, media={"word/media/image1.png": b"PNGDATA"}, rels_xml=_RELS_PNG),
+        image_dir=tmp_path,
+    )
+    assert (tmp_path / "image1.png").read_bytes() == b"PNGDATA"
+    # IR 不引磁盘路径
+    assert str(tmp_path) not in str(result.model_dump())
+
+
+def test_image_dir_none_no_export(tmp_path):
+    doc = f'<w:document {DOC_NS}><w:body><w:p><w:r><w:t>x</w:t></w:r></w:p></w:body></w:document>'
+    DocxExtractor().extract(make_docx(doc), image_dir=None)
+    assert not (tmp_path / "image1.png").exists()
+
+
+def test_header_text_metadata_and_content_lock():
+    doc = f"""<w:document {DOC_NS}><w:body>
+      <w:p><w:r><w:t>正文</w:t></w:r></w:p>
+    </w:body></w:document>"""
+    hdr = f'<w:hdr {DOC_NS}><w:p><w:r><w:t>粤高速集团文件</w:t></w:r></w:p></w:hdr>'
+    result = DocxExtractor().extract(
+        make_docx(doc, header_parts={"word/header1.xml": hdr})
+    )
+    texts = "".join(getattr(b, "text", "") for b in result.content)
+    assert "粤高速集团文件" not in texts  # 页眉不进正文（锁现状）
+    assert result.metadata.custom["docx"]["header_text"] == "粤高速集团文件"

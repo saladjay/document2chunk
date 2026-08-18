@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+import logging
 from collections import Counter
 from pathlib import Path
-from typing import List, Optional
+from typing import Iterator, List, Optional
 
 from document2chunk.extractors.docx.package_reader import PackageReader
 from document2chunk.extractors.docx.parser import DocumentParser
@@ -14,10 +15,14 @@ from document2chunk.ir import (
     BlockNode,
     DocumentMetadata,
     ExtractionResult,
+    ImageNode,
     ListNode,
     ParagraphNode,
     SourceType,
+    TableNode,
 )
+
+_logger = logging.getLogger(__name__)
 
 
 class InvalidDocxError(Exception):
@@ -46,6 +51,41 @@ def _body_font_size(blocks: List[BlockNode]) -> Optional[float]:
     return Counter(sizes).most_common(1)[0][0] if sizes else None
 
 
+def _iter_images(blocks) -> Iterator[ImageNode]:
+    """递归收集块序列中的 ImageNode（含表格/列表嵌套）。"""
+    for b in blocks:
+        if isinstance(b, ImageNode):
+            yield b
+        elif isinstance(b, TableNode):
+            for row in b.rows:
+                for cell in row.cells:
+                    yield from _iter_images(cell.blocks)
+        elif isinstance(b, ListNode):
+            for item in b.items:
+                yield from _iter_images(item.blocks)
+
+
+def _export_media(reader: PackageReader, blocks, image_dir) -> None:
+    """仅落盘被引用媒体，zip 内原名；失败 WARN 跳过（对齐 PDF 路，阶段B §4.7）。"""
+    out = Path(image_dir)
+    try:
+        out.mkdir(parents=True, exist_ok=True)
+    except OSError as e:
+        _logger.warning("docx 媒体目录创建失败 %s: %s", out, e)
+        return
+    for img in _iter_images(blocks):
+        if not img.image_id:
+            continue
+        info = reader.media_info_for_rel(img.image_id)
+        if info is None:
+            continue
+        name, data, _ext = info
+        try:
+            (out / name).write_bytes(data)
+        except OSError as e:
+            _logger.warning("docx 媒体落盘失败 %s: %s", name, e)
+
+
 class DocxExtractor:
     """可编辑 .docx 提取器。"""
 
@@ -57,6 +97,7 @@ class DocxExtractor:
         *,
         options=None,
         heuristic_headings: bool = False,
+        image_dir=None,
     ) -> ExtractionResult:
         reader = PackageReader(source)
 
@@ -75,6 +116,10 @@ class DocxExtractor:
         )
         blocks, toc_entries = parser.parse(doc_elem)
 
+        # 媒体落盘（仅被引用媒体；IR 不引磁盘路径）
+        if image_dir is not None:
+            _export_media(reader, blocks, image_dir)
+
         core = reader.core_properties()
         source_file = Path(source).name if isinstance(source, (str, Path)) else None
 
@@ -90,6 +135,14 @@ class DocxExtractor:
             )
 
         metadata = _meta()
+
+        # 页眉文本 → metadata.custom（不进正文，阶段B §4.8）
+        header_lines = [
+            " ".join("".join(h.itertext()).split()) for h in reader.header_elements()
+        ]
+        header_text = " / ".join(x for x in header_lines if x)[:200]
+        if header_text:
+            metadata.custom["docx"] = {"header_text": header_text}
 
         # 统一后处理（第三路汇合，designs/009）：DOCX 无页几何，页相关步骤天然 no-op；
         # 收益是 calibrate_levels（doc_title 字号比 + 栈式定级）与 split_attachments。
