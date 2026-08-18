@@ -553,11 +553,11 @@ def omml_text(el) -> str:
 新增两行（放 lxml import 之后即可）：
 
 ```python
-from document2chunk.extractors.docx import embedded, notes
+from document2chunk.extractors.docx import embedded
 from document2chunk.extractors.docx.embedded import omml_to_latex
 ```
 
-（`notes` 为 Task 6 引入，此处一并写入避免二次改动；`embedded` 供 Task 4/5 的 `iter_content`/`content_children`/`inside_textbox` 用。）
+（`notes` 到 Task 6 才存在，届时在 parser 与 extractor 各自加 `import notes`——本任务不可预导入；`embedded` 供 Task 4/5 的 `iter_content`/`content_children`/`inside_textbox` 用。）
 
 `from document2chunk.ir import (...)` 元组内按字母序插入两项：`FormulaNode,`（`BlockNode` 之后）、`InlineFormulaNode,`（`ImageNode` 之后）。
 
