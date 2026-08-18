@@ -392,7 +392,7 @@ Expected: 2 PASSED
 
 - [ ] **Step 5: 全量回归 + 提交**
 
-Run: `uv run pytest -q` → Expected: 186 passed
+Run: `uv run pytest -q` → Expected: 187 passed
 
 ```bash
 git add src/document2chunk/extractors/docx/package_reader.py tests/test_docx_ooxml.py
@@ -706,7 +706,7 @@ Expected: 3 PASSED
 
 - [ ] **Step 6: 全量回归 + 提交**
 
-Run: `uv run pytest -q` → Expected: 189 passed
+Run: `uv run pytest -q` → Expected: 190 passed
 
 ```bash
 git add src/document2chunk/extractors/docx/embedded.py src/document2chunk/extractors/docx/parser.py tests/test_docx_ooxml.py
@@ -893,7 +893,7 @@ Expected: 2 PASSED
 
 - [ ] **Step 6: 全量回归 + 提交**
 
-Run: `uv run pytest -q` → Expected: 191 passed
+Run: `uv run pytest -q` → Expected: 192 passed
 
 ```bash
 git add src/document2chunk/extractors/docx/embedded.py src/document2chunk/extractors/docx/parser.py tests/test_docx_ooxml.py
@@ -1071,7 +1071,7 @@ Expected: 3 PASSED
 
 - [ ] **Step 5: 全量回归 + 提交**
 
-Run: `uv run pytest -q` → Expected: 194 passed
+Run: `uv run pytest -q` → Expected: 195 passed
 
 ```bash
 git add src/document2chunk/extractors/docx/parser.py tests/test_docx_ooxml.py
@@ -1245,7 +1245,7 @@ Expected: 3 PASSED
 
 - [ ] **Step 6: 全量回归 + 提交**
 
-Run: `uv run pytest -q` → Expected: 197 passed
+Run: `uv run pytest -q` → Expected: 198 passed
 
 ```bash
 git add src/document2chunk/extractors/docx/notes.py src/document2chunk/extractors/docx/parser.py src/document2chunk/extractors/docx/extractor.py tests/test_docx_ooxml.py
@@ -1338,7 +1338,7 @@ Expected: 2 PASSED
 
 - [ ] **Step 5: 全量回归 + 提交**
 
-Run: `uv run pytest -q` → Expected: 199 passed
+Run: `uv run pytest -q` → Expected: 200 passed
 
 ```bash
 git add src/document2chunk/extractors/docx/parser.py tests/test_docx_ooxml.py
@@ -1510,7 +1510,7 @@ Expected: 3 PASSED
 
 - [ ] **Step 5: 全量回归 + 提交**
 
-Run: `uv run pytest -q` → Expected: 202 passed
+Run: `uv run pytest -q` → Expected: 203 passed
 
 ```bash
 git add src/document2chunk/extractors/docx/extractor.py tests/test_docx_ooxml.py
@@ -1699,7 +1699,7 @@ Expected: 5 个特性各输出一段 markdown。**人工核对**（执行者自�
 - [ ] **Step 5: 全量回归**
 
 Run: `uv run pytest -q`
-Expected: 203 passed（180 基线 + 23 新测试），无 FAILED
+Expected: 204 passed（180 基线 + 24 新测试：23 计划 + 1 修复轮），无 FAILED
 
 - [ ] **Step 6: 提交**
 
