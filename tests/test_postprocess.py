@@ -203,6 +203,75 @@ def test_merge_cross_page_blocked_by_period():
     assert len([b for b in out if isinstance(b, ParagraphNode)]) == 2
 
 
+def test_merge_cross_page_blocked_by_intervening_heading():
+    """design 006 §4.2：仅相邻 ParagraphNode 对可续接——中间隔标题不拼。
+
+    真实案例（TB10182-2017）：page2 末段落款日期 + page3 首块标题「前言」+
+    page3 首段正文，旧实现按「页末段/页首段」配对，跨标题把落款日期粘进正文。
+    """
+    content = [
+        P("2017年12月22日", page=2, bbox=(0, 700, 100, 720)),
+        H("前言", level=2, bbox=(0, 100, 100, 130)),
+        P("本规程是在总结实践经验的基础上编制完成的。", page=3, bbox=(0, 140, 100, 200)),
+    ]
+    out = merge_cross_page(content)
+    paras = [b for b in out if isinstance(b, ParagraphNode)]
+    assert len(paras) == 2, [p.text for p in paras]
+    assert paras[0].text == "2017年12月22日"
+
+
+def test_merge_cross_page_blocked_by_intervening_list():
+    """同上：中间隔 ListNode（整页编号列表）不拼。"""
+    from document2chunk.ir import ListItemNode, ListNode, Provenance, SourceType
+
+    lst = ListNode(
+        id="l1", ordered=True,
+        items=[ListItemNode(id="li1", level=0, blocks=[P("1. 明确了适用范围。")]),
+               ListItemNode(id="li2", level=0, blocks=[P("2. 规定了控制标准。")])],
+        provenance=Provenance(source_type=SourceType.OCR, page_index=3, bbox=[0, 300, 100, 400]),
+    )
+    content = [
+        P("……主要内容如下：", page=3, bbox=(0, 200, 100, 220)),
+        lst,
+        P("本规程执行过程中，希望各单位结合工程实践。", page=4, bbox=(0, 0, 100, 60)),
+    ]
+    out = merge_cross_page(content)
+    paras = [b for b in out if isinstance(b, ParagraphNode)]
+    assert len(paras) == 2, [p.text for p in paras]
+    assert paras[0].text.endswith("主要内容如下：")
+
+
+def test_merge_cross_page_blocked_by_clause_number():
+    """条文号段落（x.y.z 形，5.0.1/5.0.3）是子条文标题，不跨页续接。
+
+    真实案例（TB10182-2017 p41/p51）：旧实现把「5.0.1 桩板结构形式」与次页
+    「5.0.3 由于桩板结构……」拼成一段。R10 的 _LIST_MARKER_RE 因 (?!\d)
+    前瞻放行多级编号，此为其盲区。
+    """
+    content = [
+        P("5.0.1 桩板结构形式", page=41, bbox=(0, 700, 100, 720)),
+        P("5.0.3 由于桩板结构下穿…", page=42, bbox=(0, 0, 100, 20)),
+        P("（2005.5～2006.6）", page=50, bbox=(0, 700, 100, 720)),
+        P("8.0.6 变形缝是隧道…", page=51, bbox=(0, 0, 100, 20)),
+    ]
+    out = merge_cross_page(content)
+    paras = [b.text for b in out if isinstance(b, ParagraphNode)]
+    assert paras == ["5.0.1 桩板结构形式", "5.0.3 由于桩板结构下穿…",
+                     "（2005.5～2006.6）", "8.0.6 变形缝是隧道…"]
+
+
+def test_merge_cross_page_decimal_continuation_still_joins():
+    """小数尺寸（0.75 m、1.25 m）不是条文号，仍正常续接。"""
+    content = [
+        P("……分别不宜小于0.75 m、1.0 m、", page=33, bbox=(0, 700, 100, 720)),
+        P("1.25 m、1.5 m。", page=34, bbox=(0, 0, 100, 20)),
+    ]
+    out = merge_cross_page(content)
+    paras = [b for b in out if isinstance(b, ParagraphNode)]
+    assert len(paras) == 1
+    assert "1.25 m" in paras[0].text
+
+
 def test_merge_cross_page_multiline_heading():
     """多行无编号标题合并（_merge_headings 迁入）：相邻同 level + 前段无句尾 → 合并。"""
     content = [

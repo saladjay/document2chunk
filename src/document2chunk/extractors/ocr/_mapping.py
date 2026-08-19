@@ -1,8 +1,13 @@
-"""方案 A 的映射层：markdown 元素 + parsing_res_list(bbox) + images → BlockNode 列表。
+"""方案 B 的映射层：parsing_res_list（单一数据源）→ BlockNode 列表。
 
-- markdown 元素建结构/层级（来自 _markdown.parse_markdown）。
-- parsing_res_list 按 order 关联补 bbox（丢弃 page_number/header/footer/number 后 1:1）。
-- HTML <table> → TableNode（lxml）；图片 base64 → 落盘。
+- 遍历 parsing_res_list，按 block_label 路由：DROP 噪声 / title→HeadingNode /
+  text→ParagraphNode（连续编号项分组 ListNode）/ table→TableNode / image,chart→ImageNode。
+- block_content 自包含（标题带 ATX 前缀、表格 HTML、图片 <img src> 与 images
+  字典 key 直接匹配），不再依赖整页 markdown 的索引对齐——issues5：列表合并
+  （N 个 prl block → 1 个 markdown 元素）与页眉/页码 DROP 都会使索引错位，
+  页码文本拿到 text 的 bbox 后 DROP 永不触发。
+- det_scores 与 parsing_res_list 同源同序，按 prl 自身索引取，天然对齐。
+- prl 缺失（服务变体）时退回 markdown 建结构（bbox None，文本不丢）。
 """
 
 from __future__ import annotations
@@ -14,7 +19,12 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from lxml import html as lxml_html
 
-from document2chunk.extractors.ocr._markdown import parse_markdown
+from document2chunk.extractors.ocr._markdown import (
+    _HTML_IMG_ALT_RE,
+    _HTML_IMG_RE,
+    _IMAGE_LINE_RE,
+    parse_markdown,
+)
 from document2chunk.ir import (
     BlockNode,
     FormulaNode,
@@ -32,7 +42,16 @@ from document2chunk.ir import (
     TableNode,
 )
 
-DROP_LABELS = {"page_number", "header", "footer", "number"}
+# 真实服务 label 实测（TB10182-2017 全 44 页）：doc_title/paragraph_title/text/
+# number/header/header_image/figure_title/vision_footnote/content/chart/image/table。
+DROP_LABELS = {"page_number", "header", "footer", "number", "header_image"}
+TITLE_LABELS = {"title", "doc_title", "paragraph_title"}
+IMAGE_LABELS = {"image", "chart"}
+EQUATION_LABELS = {"equation", "formula"}
+
+_ATX_RE = re.compile(r"^(#{1,6})\s+(.*)$", re.S)
+_OL_ITEM_RE = re.compile(r"^(\d+)[).]\s+(.*)$", re.S)
+_UL_ITEM_RE = re.compile(r"^[-*]\s+(.*)$", re.S)
 
 
 def _convert_bbox(
@@ -57,7 +76,7 @@ _INLINE_FORMULA_RE = re.compile(r"\\\((.+?)\\\)", re.S)
 
 
 def _text_to_runs(text: str, idc: "_Idc") -> List[Any]:
-    """把段落文本按 \(..\) 拆成 RunNode / InlineFormulaNode 交替的 runs。"""
+    r"""把段落文本按 \(..\) 拆成 RunNode / InlineFormulaNode 交替的 runs。"""
     runs: List[Any] = []
     pos = 0
     for m in _INLINE_FORMULA_RE.finditer(text):
@@ -95,6 +114,57 @@ class _Idc:
         return f"cell_{self.cell:06d}"
 
 
+def _strip_layout_tags(b: str) -> str:
+    """剥离 <div>/<span> 布局包装（保留内部文本；<img>/<table> 不在此处理）。"""
+    if "<div" in b or "</div>" in b or "<span" in b or "</span>" in b:
+        b = re.sub(r"</?div[^>]*>", "", b, flags=re.I)
+        b = re.sub(r"</?span[^>]*>", "", b, flags=re.I)
+    return b.strip()
+
+
+def _strip_atx(text: str) -> Tuple[int, str]:
+    """'## 前言' → (2, '前言')；无前缀 → (1, 原文)。"""
+    m = _ATX_RE.match(text)
+    if m:
+        return len(m.group(1)), m.group(2).strip()
+    return 1, text
+
+
+def _union_bbox(boxes: List[Optional[List[float]]]) -> Optional[List[float]]:
+    valid = [b for b in boxes if b and len(b) >= 4]
+    if not valid:
+        return None
+    return [
+        min(b[0] for b in valid),
+        min(b[1] for b in valid),
+        max(b[2] for b in valid),
+        max(b[3] for b in valid),
+    ]
+
+
+def _extract_img_ref(raw: str) -> Tuple[str, str]:
+    """从 block_content 提取图片 ref/alt（HTML <img> 或 markdown 行均可）。"""
+    m = _HTML_IMG_RE.search(raw)
+    if m:
+        alt_m = _HTML_IMG_ALT_RE.search(raw)
+        alt = (alt_m.group(1).strip() if alt_m and alt_m.group(1).strip() else "Image")
+        return m.group(1), alt
+    m = _IMAGE_LINE_RE.match(raw.strip())
+    if m:
+        return m.group(2), m.group(1) or "Image"
+    return "", "Image"
+
+
+def _strip_math_delimiters(raw: str) -> str:
+    """剥块公式定界符：\\[..\\] / $$..$$ / 裸 latex。"""
+    s = raw.strip()
+    if s.startswith("\\[") and s.endswith("\\]"):
+        return s[2:-2].strip()
+    if s.startswith("$$") and s.endswith("$$") and len(s) >= 4:
+        return s[2:-2].strip()
+    return s
+
+
 def build_page_blocks(
     markdown: str,
     parsing_res_list: List[Dict[str, Any]],
@@ -110,29 +180,143 @@ def build_page_blocks(
     service_h: float = 1000.0,
     det_scores: Optional[List[float]] = None,
 ) -> List[BlockNode]:
-    """单页 markdown+parsing_res_list → BlockNode 列表（带 provenance + confidence）。"""
-    elements = parse_markdown(markdown)
-    # content_blocks + 对齐的 confidence scores（过滤 DROP_LABELS 后）
-    content_blocks: List[Dict[str, Any]] = []
-    content_scores: List[Optional[float]] = []
-    for j, b in enumerate(parsing_res_list or []):
-        if b.get("block_label") not in DROP_LABELS:
-            content_blocks.append(b)
-            score = det_scores[j] if (det_scores and j < len(det_scores)) else None
-            content_scores.append(score)
+    """单页 parsing_res_list → BlockNode 列表（带 provenance + confidence）。
 
-    out: List[BlockNode] = []
-    for i, el in enumerate(elements):
-        bbox = content_blocks[i].get("block_bbox") if i < len(content_blocks) else None
-        bbox = _convert_bbox(bbox, page_w, page_h, service_w, service_h)
-        conf = content_scores[i] if i < len(content_scores) else None
+    方案 B（issues5）：以 parsing_res_list 为单一数据源，逐块按 block_label
+    路由建节点；DROP 过滤与建节点同一遍历，不存在两列表索引对齐问题。
+    markdown 仅在 prl 缺失时作兜底（bbox None）。
+    """
+    prl = parsing_res_list or []
+
+    # 兜底：无 prl（服务变体）→ markdown 建结构，bbox/confidence 全空
+    if not prl:
+        out: List[BlockNode] = []
+        prov = Provenance(source_type=SourceType.OCR, page_index=page_index)
+        for el in parse_markdown(markdown or ""):
+            node = _element_to_node(el, images, page_index, idc, image_out_dir, extract_images, _img_counter, prov)
+            if node is not None:
+                out.append(node)
+        return _filter_empty(out)
+
+    nodes: List[BlockNode] = []
+    pending: Optional[Dict[str, Any]] = None  # 待提交的连续编号列表
+
+    def flush() -> None:
+        nonlocal pending
+        if pending:
+            nodes.append(_pending_to_list_node(pending, page_index, idc))
+            pending = None
+
+    for i, block in enumerate(prl):
+        label = (block.get("block_label") or "").strip()
+        if label in DROP_LABELS:
+            continue
+        raw = (block.get("block_content") or "").strip()
+        if not raw and label not in IMAGE_LABELS:
+            continue  # 空内容块（图片标签块除外——仍出占位）
+
+        bbox = _convert_bbox(block.get("block_bbox"), page_w, page_h, service_w, service_h)
+        conf = det_scores[i] if (det_scores and i < len(det_scores)) else None
         prov = Provenance(source_type=SourceType.OCR, page_index=page_index, bbox=bbox, confidence=conf)
-        node = _element_to_node(el, images, page_index, idc, image_out_dir, extract_images, _img_counter, prov)
+
+        # 连续编号 text 项 → ListNode 分组（保原序号，issues4）
+        if label == "text":
+            plain = _strip_layout_tags(raw)
+            if plain and not plain.lower().startswith("<table") and "<img" not in plain.lower():
+                m = _OL_ITEM_RE.match(plain)
+                if m:
+                    if pending and pending["ordered"]:
+                        pending["items"].append((plain, prov))
+                    else:
+                        flush()
+                        pending = {"ordered": True, "items": [(plain, prov)]}
+                    continue
+                m = _UL_ITEM_RE.match(plain)
+                if m:
+                    item_text = m.group(1).strip()
+                    if pending and not pending["ordered"]:
+                        pending["items"].append((item_text, prov))
+                    else:
+                        flush()
+                        pending = {"ordered": False, "items": [(item_text, prov)]}
+                    continue
+
+        flush()
+        node = _block_to_node(label, raw, images, page_index, idc, image_out_dir, extract_images, _img_counter, prov)
         if node is not None:
-            out.append(node)
-    # 过滤空文本块（Phase 1L）
-    out = [b for b in out if not (isinstance(b, (HeadingNode, ParagraphNode)) and not (b.text or "").strip())]
-    return out
+            nodes.append(node)
+
+    flush()
+    return _filter_empty(nodes)
+
+
+def _filter_empty(nodes: List[BlockNode]) -> List[BlockNode]:
+    """过滤空文本块（Phase 1L）。"""
+    return [b for b in nodes if not (isinstance(b, (HeadingNode, ParagraphNode)) and not (b.text or "").strip())]
+
+
+def _pending_to_list_node(pending: Dict[str, Any], page_index: int, idc: _Idc) -> ListNode:
+    items = pending["items"]  # [(text, prov)]
+    first_prov = items[0][1]
+    prov = Provenance(
+        source_type=SourceType.OCR,
+        page_index=page_index,
+        bbox=_union_bbox([p.bbox for _, p in items]),
+        confidence=first_prov.confidence,
+    )
+    return ListNode(
+        id=idc.block(),
+        ordered=pending["ordered"],
+        items=[
+            ListItemNode(
+                id=idc.cell_id(),
+                level=0,
+                blocks=[ParagraphNode(id=idc.block(), text=t, provenance=p)],
+            )
+            for t, p in items
+        ],
+        provenance=prov,
+    )
+
+
+def _block_to_node(
+    label: str,
+    raw: str,
+    images: Dict[str, str],
+    page_index: int,
+    idc: _Idc,
+    image_out_dir: Optional[str],
+    extract_images: bool,
+    _img_counter: List[int],
+    prov: Provenance,
+) -> Optional[BlockNode]:
+    """单个 prl block → BlockNode（按 label + 内容格式路由）。"""
+    if label in TITLE_LABELS:
+        level, text = _strip_atx(_strip_layout_tags(raw))
+        if not text:
+            return None
+        return HeadingNode(
+            id=idc.block(),
+            level=min(max(level, 1), 9),
+            text=text,
+            provenance=prov,
+        )
+
+    if label == "table" or raw.lstrip().lower().startswith("<table"):
+        return _html_table_to_node(raw, idc, prov)
+
+    if label in IMAGE_LABELS or "<img" in raw.lower():
+        ref, alt = _extract_img_ref(raw)
+        return _image_to_node({"ref": ref, "alt": alt}, images, page_index, idc, image_out_dir, extract_images, _img_counter, prov)
+
+    if label in EQUATION_LABELS:
+        return FormulaNode(id=idc.block(), latex=_strip_math_delimiters(raw), provenance=prov)
+
+    # 默认段落：text / figure_title / vision_footnote / content / 未知 label
+    text = _strip_layout_tags(raw)
+    if not text:
+        return None
+    return ParagraphNode(id=idc.block(), text=text, runs=_text_to_runs(text, idc), provenance=prov)
 
 
 def _element_to_node(
@@ -145,6 +329,7 @@ def _element_to_node(
     _img_counter: List[int],
     prov: Provenance,
 ) -> Optional[BlockNode]:
+    """markdown 元素 → BlockNode（仅 prl 缺失的兜底路径使用）。"""
     kind = el["kind"]
 
     if kind == "heading":

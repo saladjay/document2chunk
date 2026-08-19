@@ -59,6 +59,9 @@ _HEIGHT_LEVELS = [(1.6, 1), (1.3, 2), (1.15, 3), (1.05, 4)]
 _SENTENCE_END_MERGE = "。！？.!?"
 _SENTENCE_END_JOIN = "。！？.!?"   # 去掉了 ；;:： （分号/冒号后可继续）
 _MERGE_PAIR_LIMIT = 4
+# 多级条文号（x.y.z + 空白，如 "5.0.3 变形缝…"）：子条文标题，非续接对象。
+# ≥2 个点组以区分小数（"1.25 m" 只有一点组，仍可续接）。
+_CLAUSE_NUM_RE = re.compile(r"^\d+(?:\.\d+){2,}\s")
 
 # filter_noise 参数
 NON_BODY_LABELS = {"number", "header", "footer", "page_header", "page_footer", "page_number"}
@@ -400,6 +403,11 @@ def _is_cross_page_continuation(b1: ParagraphNode, b2: ParagraphNode) -> bool:
     t2 = (b2.text or "").strip()
     if _LIST_MARKER_RE.match(t2):
         return False
+    # 条文号守卫（_LIST_MARKER_RE 的 (?!\d) 前瞻放行的多级编号）：b2 以
+    # x.y.z 开头是子条文标题；b1 自身是条文标题（"5.0.1 桩板结构形式"）也
+    # 不向后续接（次页首段是新条文）
+    if _CLAUSE_NUM_RE.match(t2) or _CLAUSE_NUM_RE.match((b1.text or "").strip()):
+        return False
     return True
 
 
@@ -430,6 +438,11 @@ def merge_cross_page(
         if nxt not in page_first:
             continue
         li, fi = page_last[pg], page_first[nxt]
+        # design 006 §4.2「相邻 ParagraphNode 对」：中间隔了标题/列表/表格/图片
+        # 则不是相邻对，不续接（落款日期不跨「前言」标题粘进正文；段尾不跨
+        # 整页编号列表粘次页首段）。fi == li + 1 即两段之间无任何内容块。
+        if fi != li + 1:
+            continue
         if _is_cross_page_continuation(content[li], content[fi]):
             join_pairs.append((li, fi))
             _log_add(section="merge", page=pg, action="join",
