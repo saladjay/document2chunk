@@ -397,6 +397,23 @@ def test_split_attachments_none():
     assert attach == [] and len(main) == 2
 
 
+def test_split_attachments_guard_empty_main():
+    """A1 文档开头守卫（issues6 P0 #1）：首段即「附件1」的模版类文档不拆，
+    整件归主文（此前主文 0 blocks、整文件成 attach1）。"""
+    content = [H("附件1：可行性研究报告", level=1), P("模版正文"), P("表格说明")]
+    main, attach = split_attachments(content)
+    assert attach == []
+    assert [b.text for b in main] == ["附件1：可行性研究报告", "模版正文", "表格说明"]
+
+
+def test_split_attachments_guard_only_blocks_first_boundary():
+    """守卫只挡首个边界：其后出现的附件边界正常拆。"""
+    content = [H("附件1：表A", level=1), P("A内容"), H("附件2：表B", level=1), P("B内容")]
+    main, attach = split_attachments(content)
+    assert len(attach) == 1 and attach[0][0].text == "附件2：表B"
+    assert [b.text for b in main] == ["附件1：表A", "A内容"]
+
+
 # ══════════════════════════════════════
 #  merge_split_tables —— 多页重复表头合并
 # ══════════════════════════════════════

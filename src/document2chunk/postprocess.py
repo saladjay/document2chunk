@@ -837,6 +837,12 @@ def calibrate_levels(
 #  ④ split_attachments —— 附件拆分
 # ══════════════════════════════════════
 
+
+def _nonempty_count(seg: List[BlockNode]) -> int:
+    """段内非空文本块数（开头守卫用）。"""
+    return sum(1 for x in seg if (getattr(x, "text", "") or "").strip())
+
+
 def split_attachments(
     content: List[BlockNode],
     *,
@@ -869,6 +875,12 @@ def split_attachments(
         # ④ 引用清单：一块里 >1 个附件标记 → 不切
         multi_ref = len(re.findall(r"附\s*[件表录]\s*[:：．\.、0-9（(]", txt)) > 1
         if regex_ok and not multi_ref:
+            # ⑤ 文档开头守卫（issues6 根因#1）：首个边界命中且主文侧无任何非空
+            # 内容块 → 不拆（模版类文档首段即「附件1」，整件本是上级文档的附件，
+            # 拆走致主文 0 blocks）
+            if len(segments) == 1 and _nonempty_count(segments[0]) == 0:
+                segments[-1].append(b)
+                continue
             segments.append([b])
             _log_add(section="split", split_at=getattr(b, "id", ""),
                      heading=txt[:30], segment=f"attachment_{len(segments) - 1}")
