@@ -675,10 +675,9 @@ def test_sdt_toc_entries_collected():
     </w:body></w:document>"""
     ext = DocxExtractor()
     result = ext.extract(make_docx(doc))
-    # TOC entries should have been collected
-    toc_texts = [e.text for e in ext._toc_entries] if hasattr(ext, '_toc_entries') else []
-    # The parser stores toc_entries internally; check via result metadata if available
-    # At minimum, verify TOC text is NOT in content blocks
+    # TOC entries should have been collected via the public interface
+    assert [e.text for e in (result.toc_entries or [])] == ["第一章 概述", "第二章 详细设计"]
+    # Verify TOC text is NOT in content blocks
     content_texts = [getattr(b, "text", "") for b in result.content]
     assert "第一章 概述" in content_texts  # 正文标题还在
     # TOC 中的 "第二章 详细设计" 不应作为正文出现
