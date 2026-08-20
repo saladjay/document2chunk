@@ -201,16 +201,61 @@ class DocumentParser:
         return blocks, self._toc_entries
 
     def _iter_body_parts(self, body, depth: int = 0):
-        """body 子元素遍历；w:sdt 透明展开 sdtContent（上限 10 层，阶段B §4.6）。"""
+        """body 子元素遍历；w:sdt 透明展开 sdtContent（上限 10 层，阶段B §4.6）。
+
+        TOC SDT（docPartGallery="Table of Contents" 或含 HYPERLINK \\l 书签式
+        目录）整体跳过，避免目录条目被误判为伪标题。
+        """
         if depth > 10:
             return
         for child in body:
             if etree.QName(child).localname == "sdt":
+                if self._is_toc_sdt(child):
+                    self._collect_toc_entries_from_sdt(child)
+                    continue
                 content = child.find(w("sdtContent"))
                 if content is not None:
                     yield from self._iter_body_parts(content, depth + 1)
                 continue
             yield child
+
+    @staticmethod
+    def _is_toc_sdt(sdt) -> bool:
+        """判断 SDT 是否为目录（TOC）容器。
+
+        检测两种模式：
+        1. docPartGallery 含 "Table of Contents"
+        2. 含 HYPERLINK \\l 书签式域代码（WPS / 部分 Word 生成方式）
+        """
+        # 方式 1：docPartGallery
+        sdtPr = sdt.find(w("sdtPr"))
+        if sdtPr is not None:
+            dpo = sdtPr.find(w("docPartObj"))
+            if dpo is not None:
+                gallery = dpo.find(w("docPartGallery"))
+                if gallery is not None:
+                    val = (wa(gallery, "val") or "").lower()
+                    if "table of contents" in val:
+                        return True
+        # 方式 2：instrText 含 HYPERLINK \l（书签跳转 = 目录特征）
+        content = sdt.find(w("sdtContent"))
+        if content is None:
+            return False
+        hyperlink_count = 0
+        for instr in content.iter(w("instrText")):
+            txt = (instr.text or "").strip()
+            if "HYPERLINK" in txt.upper() and "\\l" in txt:
+                hyperlink_count += 1
+        return hyperlink_count >= 2  # ≥2 个 HYPERLINK \l = 目录
+
+    def _collect_toc_entries_from_sdt(self, sdt) -> None:
+        """从 SDT-TOC 中提取目录条目（best-effort）。"""
+        content = sdt.find(w("sdtContent"))
+        if content is None:
+            return
+        for child in self._iter_body_parts(content):
+            if etree.QName(child).localname == "p":
+                self._collect_toc_entry(child)
 
     @staticmethod
     def _ilvl_int(ilvl: str) -> int:
