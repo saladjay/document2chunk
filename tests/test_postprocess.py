@@ -97,6 +97,37 @@ def test_calibrate_doc_title_fallback_no_height():
     assert heads["一、总则"] == 2
 
 
+def test_calibrate_doc_title_position_constraint():
+    """doc_title 位置约束（issues6 P0 #2）：候选限文档前 K 块——FAQ 类文档
+    文中无编号长问句不得凭长度碾压文档开头的短真标题。"""
+    long_q = "单位科技管理员或领导在审核过程中发现的问题应当如何进行处理和反馈呢"
+    content = [
+        H("常见问题解答", level=1, bbox=(0, 0, 100, 40)),
+        P("问题一", bbox=(0, 0, 100, 20)),
+    ] + [P(f"答案要点{i}", bbox=(0, 0, 100, 20)) for i in range(10)] + [
+        H(long_q, level=1, bbox=(0, 0, 100, 40)),
+        P("答案", bbox=(0, 0, 100, 20)),
+    ]
+    md = _md()
+    out = calibrate_levels(content, md)
+    assert md.title == "常见问题解答"
+    # 长问句未被卷入 doc_title 竞争：保持 Heading，不被降级成 Paragraph
+    assert long_q in [b.text for b in out if isinstance(b, HeadingNode)]
+
+
+def test_calibrate_doc_title_position_fallback_keeps_late():
+    """前 K 块无候选时保留原候选集（标题确实靠后的文档不丢 doc_title）。"""
+    late_title = "某某关于加大耕地提质改造工作力度的实施意见全文标题"
+    content = [P(f"版头第{i}行", bbox=(0, 0, 100, 20)) for i in range(12)] + [
+        H(late_title, level=1, bbox=(0, 0, 100, 40)),
+        P("正文", bbox=(0, 0, 100, 20)),
+    ]
+    md = _md()
+    out = calibrate_levels(content, md)
+    assert md.title == late_title
+    assert late_title in [b.text for b in out if isinstance(b, HeadingNode)]
+
+
 def test_calibrate_style_stack_with_doc_title():
     """有大标题：一、→H2，（一）→H3（level_offset=1）。"""
     content = [

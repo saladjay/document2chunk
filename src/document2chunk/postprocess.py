@@ -139,6 +139,10 @@ _TITLE_KEYWORDS = (
     "公告", "命令", "细则", "目录", "清单", "标准", "规划", "纲要",
 )
 
+# doc_title 候选的文档位置上限（块索引）：FAQ 类文档全篇问句挂大字样式，
+# 文中长问句凭长度碾压开头短真标题（issues6 根因#2）
+_DOC_TITLE_MAX_BLOCK = 10
+
 
 def _title_rank(b: BlockNode) -> tuple:
     """主标题排序键：(含文种关键词/《》, 文本长度) —— 大者优先。"""
@@ -721,6 +725,13 @@ def calibrate_levels(
             b = content[i]
             _log_add(section="calibrate", block_id=b.id, text=(b.text or "")[:40],
                      detected="doc_title(promoted)", action="→候选", reason="DOCX 字号比提升")
+
+    # 0e. 位置约束（issues6 根因#2）：doc_title 候选限文档前 K 块；前 K 块无候选
+    # 时保留原候选集（版头占多块/标题靠后的文档不丢 doc_title）
+    if doc_title_indices:
+        early = [i for i in doc_title_indices if i < _DOC_TITLE_MAX_BLOCK]
+        if early:
+            doc_title_indices = early
 
     has_doc_title = len(doc_title_indices) > 0
     doc_title_set: set = set(doc_title_indices)
