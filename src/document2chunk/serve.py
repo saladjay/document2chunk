@@ -5,7 +5,8 @@
 - zip 模式：收文件二进制 → 返回 zip 流（result.md + images/）
 - CLI：python -m document2chunk cli --input X --output Y --images Z → 写 result.md + images/
 
-result.md 为**全文**（主文 + 附件），图片引用相对路径 images/xxx.png。
+全类型路由（pdf/docx/图片，按扩展名或魔数）；后处理由各 extractor 内部统一执行
+（designs/009），serve 层不再叠加。result.md 为**全文**（主文 + 附件）。
 """
 from __future__ import annotations
 
@@ -17,7 +18,7 @@ import zipfile
 from pathlib import Path
 from typing import Any, Optional, Union
 
-from document2chunk.api import _assemble, _pdf_kind, _source_name
+from document2chunk.api import _assemble, _source_name
 from document2chunk.ir import ImageNode, LogicalDocument, SourceType
 
 _DEMOTE_MAX_HEADING_LEN = 60  # demote：标题文本超此且以句号结尾 → 降为正文
@@ -36,6 +37,10 @@ def _extract_with_images(source, st: SourceType, image_dir: Optional[str]):
             if pi + 1 >= pc:
                 break
         return OcrExtractor().extract(source, image_out_dir=image_dir), geo
+    if st == SourceType.DOCX:
+        from document2chunk.extractors.docx import DocxExtractor
+        # DOCX 无页几何，page_geometry=None；extract() 内部自跑统一 postprocess
+        return DocxExtractor().extract(source, image_dir=image_dir), None
     from document2chunk.extractors.pdf import PdfExtractor
     # PDF 页面尺寸
     import pymupdf as _fitz
@@ -96,21 +101,6 @@ def _doc_markdown(doc: LogicalDocument) -> str:
     return "".join(parts)
 
 
-def _run_postprocess(result, page_geometry=None):
-    """对 ExtractionResult 跑全文档后处理（filter_noise → merge → calibrate → split）。"""
-    from document2chunk.postprocess import postprocess as _postprocess
-
-    main, attach_segs = _postprocess(
-        result.content, result.metadata,
-        toc_entries=result.toc_entries,
-        page_geometry=page_geometry,
-    )
-    result.content = main
-    from document2chunk.ir import ExtractionResult
-    for seg in attach_segs:
-        result.attachments.append(ExtractionResult(content=seg, metadata=result.metadata))
-
-
 def parse_to_files(
     source: Union[str, Path, bytes],
     output_dir: Union[str, Path],
@@ -127,9 +117,8 @@ def parse_to_files(
     output_dir.mkdir(parents=True, exist_ok=True)
     image_dir.mkdir(parents=True, exist_ok=True)
 
-    st = _route_source_type(source, source_type) if source_type else _pdf_kind(source)
+    st = _route_source_type(source, source_type)
     result, geo = _extract_with_images(source, st, str(image_dir))
-    _run_postprocess(result, geo)  # 全文档后处理（filter/merge/calibrate/split）
     doc = _assemble(result, False)
 
     name = _source_name(source)
@@ -159,9 +148,8 @@ def parse_to_zip(
     tmp = Path(tempfile.mkdtemp(prefix="d2c_zip_"))
     try:
         image_dir = tmp / image_dir_name
-        st = _route_source_type(data, source_type) if source_type else _pdf_kind(data)
+        st = _route_source_type(data, source_type)
         result, geo = _extract_with_images(data, st, str(image_dir))
-        _run_postprocess(result, geo)  # 全文档后处理
         doc = _assemble(result, False)
         if filename and doc.metadata.source_file is None:
             doc.metadata.source_file = filename
