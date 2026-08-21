@@ -7,6 +7,7 @@
 
 全类型路由（pdf/docx/图片，按扩展名或魔数）；后处理由各 extractor 内部统一执行
 （designs/009），serve 层不再叠加。result.md 为**全文**（主文 + 附件）。
+例外早退：.md 原件字节直通；.txt 转录（UTF-8 优先 / GB18030 回退 / 剥 BOM）。
 """
 from __future__ import annotations
 
@@ -19,6 +20,7 @@ from pathlib import Path
 from typing import Any, Optional, Union
 
 from document2chunk.api import _assemble, _source_name
+from document2chunk.exceptions import UnsupportedFormatError
 from document2chunk.ir import (
     DocumentMetadata,
     ImageNode,
@@ -33,6 +35,36 @@ _DEMOTE_MAX_HEADING_LEN = 60  # demote：标题文本超此且以句号结尾 �
 def _is_md_name(name: Optional[str]) -> bool:
     """文件名是否 .md 扩展名（大小写不敏感）—— /parse-pdf 直通判定依据。"""
     return bool(name) and Path(name).suffix.lower() == ".md"
+
+
+def _is_txt_name(name: Optional[str]) -> bool:
+    """文件名是否 .txt 扩展名（大小写不敏感）—— /parse-pdf 转录判定依据。"""
+    return bool(name) and Path(name).suffix.lower() == ".txt"
+
+
+def _txt_to_utf8(data: bytes) -> bytes:
+    """txt 转录：UTF-8 优先、GB18030（GBK 超集）回退解码，剥 BOM，统一输出 UTF-8 无 BOM。"""
+    text = None
+    for enc in ("utf-8", "gb18030"):
+        try:
+            text = bytes(data).decode(enc)
+            break
+        except UnicodeDecodeError:
+            continue
+    if text is None:
+        raise UnsupportedFormatError("txt 转录失败：内容既非 UTF-8 也非 GB18030")
+    if text.startswith("﻿"):  # 剥离开头 UTF-8 BOM（decode 后残留为首字符）
+        text = text[1:]
+    return text.encode("utf-8")
+
+
+def _minimal_doc(name: Optional[str]) -> LogicalDocument:
+    """直通/转录早退共用：不进 extractor/postprocess 的最小空文档。"""
+    return LogicalDocument(
+        metadata=DocumentMetadata(source_file=name),
+        content=[],
+        section_tree=SectionNode(id="sec_root", title="ROOT", level=0),
+    )
 
 
 def _extract_with_images(source, st: SourceType, image_dir: Optional[str]):
@@ -133,11 +165,13 @@ def parse_to_files(
         # .md 直通：不进 extractor/postprocess，原件字节原样写 result.md
         raw = source if isinstance(source, (bytes, bytearray)) else Path(source).read_bytes()
         (output_dir / "result.md").write_bytes(raw)
-        return LogicalDocument(
-            metadata=DocumentMetadata(source_file=name),
-            content=[],
-            section_tree=SectionNode(id="sec_root", title="ROOT", level=0),
-        )
+        return _minimal_doc(name)
+
+    if _is_txt_name(name):
+        # .txt 转录：不进 extractor/postprocess，解码规范化为 UTF-8 无 BOM 写 result.md
+        raw = source if isinstance(source, (bytes, bytearray)) else Path(source).read_bytes()
+        (output_dir / "result.md").write_bytes(_txt_to_utf8(raw))
+        return _minimal_doc(name)
 
     st = _route_source_type(source, source_type)
     result, geo = _extract_with_images(source, st, str(image_dir))
@@ -171,6 +205,13 @@ def parse_to_zip(
         buf = io.BytesIO()
         with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
             zf.writestr("result.md", data)
+        return buf.getvalue()
+
+    if _is_txt_name(filename):
+        # .txt 转录：不进 extractor/postprocess，转 UTF-8 无 BOM 后打包（区别于 .md 的字节直通）
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+            zf.writestr("result.md", _txt_to_utf8(data))
         return buf.getvalue()
 
     tmp = Path(tempfile.mkdtemp(prefix="d2c_zip_"))

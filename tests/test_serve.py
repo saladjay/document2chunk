@@ -1,4 +1,4 @@
-"""serve（/parse-pdf、CLI 共用路径）测试：docx 路由 + 单次后处理 + .md 直通。"""
+"""serve（/parse-pdf、CLI 共用路径）测试：docx 路由 + 单次后处理 + .md 直通 + .txt 转录。"""
 
 from __future__ import annotations
 
@@ -129,10 +129,53 @@ def test_parse_to_files_md_passthrough(tmp_path):
     assert doc.metadata.source_file == "t.md"
 
 
-def test_parse_to_zip_txt_still_unsupported():
-    """.txt 不直通，维持 UnsupportedFormatError。"""
+# ------------------------------------------------------------------
+# .txt 转录：/parse-pdf 遇 txt 文件解码→UTF-8 无 BOM 后输出 result.md
+# ------------------------------------------------------------------
+
+TXT_UTF8 = "第一行中文\nsecond line\n".encode("utf-8")
+
+
+def test_parse_to_zip_txt_utf8_passthrough():
+    """zip 模式 UTF-8 txt：转录后 result.md 与原件逐字节一致。"""
+    z = zipfile.ZipFile(io.BytesIO(serve.parse_to_zip(TXT_UTF8, "t.txt")))
+    assert z.namelist() == ["result.md"], z.namelist()
+    assert z.read("result.md") == TXT_UTF8
+
+
+def test_parse_to_zip_txt_gbk_transcoded():
+    """zip 模式 GBK txt：回退 GB18030 解码，result.md 为同文本 UTF-8 字节。"""
+    z = zipfile.ZipFile(io.BytesIO(serve.parse_to_zip("测试中文内容".encode("gbk"), "t.txt")))
+    assert z.read("result.md") == "测试中文内容".encode("utf-8")
+
+
+def test_parse_to_zip_txt_bom_stripped():
+    """UTF-8 BOM 头剥除：输出无 BOM。"""
+    z = zipfile.ZipFile(io.BytesIO(serve.parse_to_zip(b"\xef\xbb\xbf" + TXT_UTF8, "t.txt")))
+    assert z.read("result.md") == TXT_UTF8
+
+
+def test_parse_to_zip_txt_undecodable_unsupported():
+    """UTF-8 / GB18030 均解码失败 → UnsupportedFormatError。"""
     with pytest.raises(UnsupportedFormatError):
-        serve.parse_to_zip(b"hello", "t.txt")
+        serve.parse_to_zip(b"\xff\xff\xff", "t.txt")
+
+
+def test_parse_to_zip_txt_none_filename_unsupported():
+    """filename=None 的 bytes 无扩展名依据，不判 txt，维持报错。"""
+    with pytest.raises(UnsupportedFormatError):
+        serve.parse_to_zip(TXT_UTF8, None)
+
+
+def test_parse_to_files_txt_transcoded(tmp_path):
+    """路径模式 .txt：GBK 转码写盘 result.md，返回最小文档（content=[]）。"""
+    src = tmp_path / "t.txt"
+    src.write_bytes("测试中文内容".encode("gbk"))
+    out, imgs = tmp_path / "out", tmp_path / "images"
+    doc = serve.parse_to_files(str(src), str(out), str(imgs))
+    assert (out / "result.md").read_bytes() == "测试中文内容".encode("utf-8")
+    assert doc.content == []
+    assert doc.metadata.source_file == "t.txt"
 
 
 def test_parse_to_zip_md_none_filename_unsupported():
