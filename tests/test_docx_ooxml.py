@@ -461,6 +461,50 @@ def test_image_dir_none_no_export(tmp_path):
     assert not (tmp_path / "image1.png").exists()
 
 
+def test_image_dir_rewrites_image_id_to_filename(tmp_path):
+    """落盘成功后 image_id 回写为 zip 内媒体名（serve 前缀后 markdown 引用对得上，issues6 #6）。"""
+    doc = f"""<w:document {DOC_NS}><w:body>
+      <w:p><w:r><w:drawing><wp:inline><wp:extent cx="100" cy="50"/><wp:docPr descr="logo"/>
+        <a:graphic><a:blip r:embed="rId7"/></a:graphic></wp:inline></w:drawing></w:r></w:p>
+    </w:body></w:document>"""
+    result = DocxExtractor().extract(
+        make_docx(doc, media={"word/media/image1.png": b"PNGDATA"}, rels_xml=_RELS_PNG),
+        image_dir=tmp_path,
+    )
+    imgs = [b for b in result.content if isinstance(b, ImageNode)]
+    assert [i.image_id for i in imgs] == ["image1.png"]
+
+
+def test_image_dir_rewrites_image_id_shared_rid(tmp_path):
+    """同一 rId 多处引用：首个回写后 rId 查询链失效，后续引用同样拿到落盘名。"""
+    drawing = """<w:p><w:r><w:drawing><wp:inline><wp:extent cx="100" cy="50"/>
+      <a:graphic><a:blip r:embed="rId7"/></a:graphic></wp:inline></w:drawing></w:r></w:p>"""
+    doc = f'<w:document {DOC_NS}><w:body>{drawing}{drawing}</w:body></w:document>'
+    result = DocxExtractor().extract(
+        make_docx(doc, media={"word/media/image1.png": b"PNGDATA"}, rels_xml=_RELS_PNG),
+        image_dir=tmp_path,
+    )
+    imgs = [b for b in result.content if isinstance(b, ImageNode)]
+    assert [i.image_id for i in imgs] == ["image1.png", "image1.png"]
+
+
+def test_ole_preview_image_id_matches_export(tmp_path):
+    """OLE 预览图（v:imagedata r:id）同为 ImageNode：id 与落盘文件名一致。"""
+    doc = f"""<w:document {DOC_NS}><w:body>
+      <w:p><w:r><w:object>
+        <v:shape style="width:90pt;height:50pt"><v:imagedata r:id="rId9"/></v:shape>
+        <o:OLEObject ProgID="Excel.Sheet.8"/>
+      </w:object></w:r></w:p>
+    </w:body></w:document>"""
+    result = DocxExtractor().extract(
+        make_docx(doc, media={"word/media/olePreview1.wmf": b"WMFDATA"}, rels_xml=_RELS_WMF),
+        image_dir=tmp_path,
+    )
+    imgs = [b for b in result.content if isinstance(b, ImageNode)]
+    assert [i.image_id for i in imgs] == ["olePreview1.wmf"]
+    assert (tmp_path / "olePreview1.wmf").read_bytes() == b"WMFDATA"
+
+
 def test_header_text_metadata_and_content_lock():
     doc = f"""<w:document {DOC_NS}><w:body>
       <w:p><w:r><w:t>正文</w:t></w:r></w:p>

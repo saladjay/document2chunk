@@ -66,15 +66,24 @@ def _iter_images(blocks) -> Iterator[ImageNode]:
 
 
 def _export_media(reader: PackageReader, blocks, image_dir) -> None:
-    """仅落盘被引用媒体，zip 内原名；失败 WARN 跳过（对齐 PDF 路，阶段B §4.7）。"""
+    """仅落盘被引用媒体，zip 内原名；失败 WARN 跳过（对齐 PDF 路，阶段B §4.7）。
+
+    落盘成功后把 image_id 回写为媒体文件名——serve 层加 images/ 前缀后即
+    markdown 引用路径，引用与落盘对得上（issues6 #6）。回写会切断后续同
+    rId 的 rels 查询链，用 resolved 缓存续查；查不到/落盘失败保持原 id。
+    """
     out = Path(image_dir)
     try:
         out.mkdir(parents=True, exist_ok=True)
     except OSError as e:
         _logger.warning("docx 媒体目录创建失败 %s: %s", out, e)
         return
+    resolved: dict = {}  # rId → 落盘文件名
     for img in _iter_images(blocks):
         if not img.image_id:
+            continue
+        if img.image_id in resolved:
+            img.image_id = resolved[img.image_id]
             continue
         info = reader.media_info_for_rel(img.image_id)
         if info is None:
@@ -84,6 +93,9 @@ def _export_media(reader: PackageReader, blocks, image_dir) -> None:
             (out / name).write_bytes(data)
         except OSError as e:
             _logger.warning("docx 媒体落盘失败 %s: %s", name, e)
+            continue
+        resolved[img.image_id] = name
+        img.image_id = name
 
 
 class DocxExtractor:

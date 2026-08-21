@@ -20,7 +20,8 @@ W = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
 XMLDECL = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
 
 
-def make_docx(document_xml, styles_xml=None, numbering_xml=None) -> bytes:
+def make_docx(document_xml, styles_xml=None, numbering_xml=None, *, media=None, rels_xml=None) -> bytes:
+    """手搓 docx；media: {part名: bytes}，rels_xml 为 word/_rels/document.xml.rels。"""
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
         z.writestr(
@@ -42,6 +43,11 @@ def make_docx(document_xml, styles_xml=None, numbering_xml=None) -> bytes:
             z.writestr("word/styles.xml", f"{XMLDECL}\n{styles_xml}")
         if numbering_xml:
             z.writestr("word/numbering.xml", f"{XMLDECL}\n{numbering_xml}")
+        if media:
+            for name, data in media.items():
+                z.writestr(name, data)
+        if rels_xml:
+            z.writestr("word/_rels/document.xml.rels", f"{XMLDECL}\n{rels_xml}")
     return buf.getvalue()
 
 
