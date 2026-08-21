@@ -51,6 +51,14 @@ def make_docx(document_xml, styles_xml=None, numbering_xml=None, *, media=None, 
     return buf.getvalue()
 
 
+def test_invalid_docx_error_is_d2c_error():
+    """InvalidDocxError 必须继承 Document2ChunkError（api 422 handler 才能接住）。"""
+    from document2chunk.exceptions import Document2ChunkError
+    from document2chunk.extractors.docx import InvalidDocxError
+
+    assert issubclass(InvalidDocxError, Document2ChunkError)
+
+
 STYLES = f"""<w:styles xmlns:w="{W}">
   <w:docDefaults><w:rPrDefault><w:rPr><w:rFonts w:ascii="Calibri"/><w:sz w:val="22"/></w:rPr></w:rPrDefault></w:docDefaults>
   <w:style w:type="paragraph" w:styleId="Normal"><w:name w:val="Normal"/></w:style>

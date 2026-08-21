@@ -7,6 +7,7 @@ from collections import Counter
 from pathlib import Path
 from typing import Iterator, List, Optional
 
+from document2chunk.exceptions import Document2ChunkError
 from document2chunk.extractors.docx.package_reader import PackageReader
 from document2chunk.extractors.docx.parser import DocumentParser
 from document2chunk.extractors.docx import notes
@@ -25,8 +26,8 @@ from document2chunk.ir import (
 _logger = logging.getLogger(__name__)
 
 
-class InvalidDocxError(Exception):
-    """无效的 .docx 文件。"""
+class InvalidDocxError(Document2ChunkError):
+    """无效的 .docx 文件（Document2ChunkError → /parse-json 422 handler 接住）。"""
 
 
 def _body_font_size(blocks: List[BlockNode]) -> Optional[float]:
