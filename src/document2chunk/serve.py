@@ -19,9 +19,20 @@ from pathlib import Path
 from typing import Any, Optional, Union
 
 from document2chunk.api import _assemble, _source_name
-from document2chunk.ir import ImageNode, LogicalDocument, SourceType
+from document2chunk.ir import (
+    DocumentMetadata,
+    ImageNode,
+    LogicalDocument,
+    SectionNode,
+    SourceType,
+)
 
 _DEMOTE_MAX_HEADING_LEN = 60  # demote：标题文本超此且以句号结尾 → 降为正文
+
+
+def _is_md_name(name: Optional[str]) -> bool:
+    """文件名是否 .md 扩展名（大小写不敏感）—— /parse-pdf 直通判定依据。"""
+    return bool(name) and Path(name).suffix.lower() == ".md"
 
 
 def _extract_with_images(source, st: SourceType, image_dir: Optional[str]):
@@ -117,11 +128,21 @@ def parse_to_files(
     output_dir.mkdir(parents=True, exist_ok=True)
     image_dir.mkdir(parents=True, exist_ok=True)
 
+    name = _source_name(source)
+    if _is_md_name(name):
+        # .md 直通：不进 extractor/postprocess，原件字节原样写 result.md
+        raw = source if isinstance(source, (bytes, bytearray)) else Path(source).read_bytes()
+        (output_dir / "result.md").write_bytes(raw)
+        return LogicalDocument(
+            metadata=DocumentMetadata(source_file=name),
+            content=[],
+            section_tree=SectionNode(id="sec_root", title="ROOT", level=0),
+        )
+
     st = _route_source_type(source, source_type)
     result, geo = _extract_with_images(source, st, str(image_dir))
     doc = _assemble(result, False)
 
-    name = _source_name(source)
     if doc.metadata.source_file is None and name:
         doc.metadata.source_file = name
     if doc.metadata.source_type is None:
@@ -144,6 +165,13 @@ def parse_to_zip(
 ) -> bytes:
     """zip 模式：解析 data，返回 zip 字节流（根目录 result.md + images/）。"""
     from document2chunk.api import _route_source_type
+
+    if _is_md_name(filename):
+        # .md 直通：不进 extractor/postprocess，原始字节直接打包（不 decode/re-encode）
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+            zf.writestr("result.md", data)
+        return buf.getvalue()
 
     tmp = Path(tempfile.mkdtemp(prefix="d2c_zip_"))
     try:

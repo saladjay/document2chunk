@@ -1,11 +1,14 @@
-"""serve（/parse-pdf、CLI 共用路径）测试：docx 路由 + 单次后处理。"""
+"""serve（/parse-pdf、CLI 共用路径）测试：docx 路由 + 单次后处理 + .md 直通。"""
 
 from __future__ import annotations
 
 import io
 import zipfile
 
+import pytest
+
 from document2chunk import serve
+from document2chunk.exceptions import UnsupportedFormatError
 from document2chunk.ir import SourceType
 
 from test_docx import make_docx
@@ -18,6 +21,8 @@ DOC_XML = (
     "</w:body></w:document>"
 )
 DOCX_BYTES = make_docx(DOC_XML)
+
+MD_BYTES = "# 测试\n\n正文".encode("utf-8")
 
 
 def _read_md(zip_bytes: bytes) -> str:
@@ -92,3 +97,45 @@ def test_parse_to_zip_docx_image_refs_match_files():
     assert "](images/image1.png)" in md, md
     assert "images/rId7" not in md, md
     assert "images/image1.png" in z.namelist(), z.namelist()
+
+
+# ------------------------------------------------------------------
+# .md 直通：/parse-pdf 遇 md 文件跳过解析、输出原件
+# ------------------------------------------------------------------
+
+
+def test_parse_to_zip_md_passthrough():
+    """zip 模式 .md 直通：不解析，zip 恰含 result.md 且为原始字节。"""
+    z = zipfile.ZipFile(io.BytesIO(serve.parse_to_zip(MD_BYTES, "t.md")))
+    assert z.namelist() == ["result.md"], z.namelist()
+    assert z.read("result.md") == MD_BYTES
+
+
+def test_parse_to_zip_md_uppercase_ext():
+    """大写 .MD 扩展名同样直通（大小写不敏感）。"""
+    z = zipfile.ZipFile(io.BytesIO(serve.parse_to_zip(MD_BYTES, "T.MD")))
+    assert z.namelist() == ["result.md"], z.namelist()
+    assert z.read("result.md") == MD_BYTES
+
+
+def test_parse_to_files_md_passthrough(tmp_path):
+    """路径模式 .md 直通：result.md = 原件字节，返回最小文档（content=[]）。"""
+    src = tmp_path / "t.md"
+    src.write_bytes(MD_BYTES)
+    out, imgs = tmp_path / "out", tmp_path / "images"
+    doc = serve.parse_to_files(str(src), str(out), str(imgs))
+    assert (out / "result.md").read_bytes() == MD_BYTES
+    assert doc.content == []
+    assert doc.metadata.source_file == "t.md"
+
+
+def test_parse_to_zip_txt_still_unsupported():
+    """.txt 不直通，维持 UnsupportedFormatError。"""
+    with pytest.raises(UnsupportedFormatError):
+        serve.parse_to_zip(b"hello", "t.txt")
+
+
+def test_parse_to_zip_md_none_filename_unsupported():
+    """filename=None 的 bytes 无扩展名依据，不判 md，维持报错。"""
+    with pytest.raises(UnsupportedFormatError):
+        serve.parse_to_zip(b"# x", None)
