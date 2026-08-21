@@ -6,7 +6,7 @@
 ## 现状
 
 - **112:9300** 现跑 **mineru2doc**（`/parse`，mineru-adapter），**无 `/parse-pdf`**。
-- 本仓库新增 `Dockerfile.d2c` + `docker-compose.d2c.yml`：Document2Chunk 服务（`/parse` + `/parse-pdf`）。
+- 本仓库新增 `Dockerfile.d2c` + `docker-compose.d2c.yml`：Document2Chunk 服务（`/parse-pdf`，d2c 引擎，全类型路由：PDF/DOCX/图片）。
 
 ## 端口决策
 
@@ -46,6 +46,13 @@ curl http://128.23.67.112:9301/health
 curl -X POST http://128.23.67.112:9301/parse-pdf \
   -F "file=@/path/to/test.pdf" -o /tmp/r.zip
 python -c "import zipfile; z=zipfile.ZipFile('/tmp/r.zip'); print(z.namelist()[:4]); print(z.read('result.md').decode()[:60])"
+
+# docx 验证（/parse-pdf 全类型路由：pdf/docx/图片按扩展名或魔数自动分流）
+curl -X POST http://128.23.67.112:9301/parse-pdf \
+  -F "file=@/path/to/test.docx" -o /tmp/r.zip
+python -c "import zipfile; z=zipfile.ZipFile('/tmp/r.zip'); print(z.namelist()[:4]); print(z.read('result.md').decode()[:60])"
+# 期望：result.md 内容为结构化正文（真标题层级），非表格数字铺标题的劣化输出
+# 含图 docx：result.md 的 images/xxx.png 引用与 zip 内落盘文件一一对应
 
 # 路径模式自测
 curl -X POST http://128.23.67.112:9301/parse-pdf \
