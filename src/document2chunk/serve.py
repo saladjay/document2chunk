@@ -53,7 +53,7 @@ def _txt_to_utf8(data: bytes) -> bytes:
             continue
     if text is None:
         raise UnsupportedFormatError("txt 转录失败：内容既非 UTF-8 也非 GB18030")
-    if text.startswith("﻿"):  # 剥离开头 UTF-8 BOM（decode 后残留为首字符）
+    if text.startswith("\ufeff"):  # 剥离开头 UTF-8 BOM（decode 后残留为首字符）
         text = text[1:]
     return text.encode("utf-8")
 
