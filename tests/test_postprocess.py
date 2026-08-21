@@ -197,11 +197,12 @@ def test_calibrate_doc_title_toc_title_not_promoted():
         _dp("第一章 总则 ………………………………………………… 1", size=14.0),
     ]
     md = _mdocx()
-    calibrate_levels(content, md, use_height_fallback=False, body_font_size=14.0)
+    out = calibrate_levels(content, md, use_height_fallback=False, body_font_size=14.0)
     assert md.title == title
-    # 目录标题未被提升为 HeadingNode；早窗外大字段落保持 ParagraphNode
-    assert all(b.text != "目 录" for b in content if isinstance(b, HeadingNode))
-    assert all(isinstance(b, ParagraphNode) for b in content if b.text == "审 批 表")
+    # 目录标题未被提升为 HeadingNode；早窗外大字段落保持 ParagraphNode（断返回值 out，
+    # 非——calibrate 不原位替换 content 元素，断 content 是恒真空转）
+    assert all(b.text != "目 录" for b in out if isinstance(b, HeadingNode))
+    assert all(isinstance(b, ParagraphNode) for b in out if b.text == "审 批 表")
 
 
 def test_calibrate_doc_title_promotion_formula_runs_no_crash():
@@ -228,6 +229,124 @@ def test_calibrate_doc_title_promotion_formula_runs_no_crash():
     h = [b for b in out if isinstance(b, HeadingNode) and b.text == "基于能量守恒的变形计算式"]
     assert h and h[0].level == 1
     assert all(r.type == "run" for r in h[0].runs)
+
+
+def test_calibrate_doc_title_window_furniture_loses_to_weak_l1():
+    """（审查场景 B·e80dac1 收窄）弱证据真标题（L1 样式、15pt/14pt≈1.07、非居中、
+    len≥8）+ 块 5 居中 20pt 段落「审 批 表」——提升窗（前 10 块）内的强证据
+    家具词抢占 doc_title，真标题被降 H2。修复：仅有提升候选时窄 fallback 候选
+    并入同场竞争（_title_rank 定胜）——真标题凭文种关键词+长度反超家具词。"""
+    title = "关于印发《广东省交通集团科技创新“十四五”发展纲要》的通知"
+    content = [
+        _dp("粤交集基〔2022〕404号", size=16.0),                       # 块 0：版头文号
+        _dh(title, level=1, size=15.0, source="style"),                # 块 1：真标题（弱证据）
+        _dp("直属各单位、本部各部门:", size=14.0),                       # 块 2
+        _dp("为适应新形势下的创新驱动发展需求，进一步增强集团科技创新能力。", size=14.0),
+        _dp("现将《广东省交通集团科技创新“十四五”发展纲要》印发给你们，请遵照执行。", size=14.0),
+        _dp("审 批 表", size=20.0, centered=True),                     # 块 5：旧窗（<10）内家具词
+    ] + [
+        _dp(f"正文内容填充第{i}段，保持常规字号。", size=14.0) for i in range(10)
+    ]
+    md = _mdocx()
+    out = calibrate_levels(content, md, use_height_fallback=False, body_font_size=14.0)
+    assert md.title == title
+    heads = {b.text: b.level for b in out if isinstance(b, HeadingNode)}
+    assert heads[title] == 1
+    # 家具词未被提升抢占，保持段落
+    assert all(isinstance(b, ParagraphNode) for b in out if b.text == "审 批 表")
+
+
+def test_calibrate_doc_title_early_short_l1_competes_in_early_window():
+    """（审查场景 C·e80dac1 收窄）块 0 L1「使用说明」（4 字，早窗 len≥4 例外
+    命中即 break）+ 块 2 L1「某某系统操作指引汇总文档」（12 字、无强证据）。
+    早窗短 L1 不得 break 即胜——早窗内候选同场竞争（_title_rank），长真标题赢；
+    早窗外（块 3+）仍是位置优先（FAQ二：块 9 长问句不得反转，另测覆盖）。"""
+    content = [
+        _dh("使用说明", level=1, size=16.0, source="style"),           # 块 0：短版头（4 字）
+        _dp("本文档用于说明系统操作流程与注意事项。", size=16.0),
+        _dh("某某系统操作指引汇总文档", level=1, size=16.0, source="style"),  # 块 2：长真标题
+        _dp("正文内容第一段。", size=16.0),
+        _dp("正文内容第二段。", size=16.0),
+    ]
+    md = _mdocx()
+    out = calibrate_levels(content, md, use_height_fallback=False, body_font_size=16.0)
+    assert md.title == "某某系统操作指引汇总文档"
+    heads = {b.text: b.level for b in out if isinstance(b, HeadingNode)}
+    assert heads["某某系统操作指引汇总文档"] == 1
+    assert heads["使用说明"] == 2  # 早窗短版头退为下级标题
+
+
+def test_calibrate_doc_title_early_short_l1_still_wins_over_late_long():
+    """（FAQ二回归守卫·场景 C 收窄的边界）早窗短 L1（块 0「常见问题解答」6 字）
+    对早窗外长 L1（块 9、39 字）仍是位置优先——同场竞争只发生在早窗（前 3 块）
+    内，不得把 e80dac1 修复打回去。"""
+    long_q = "单位科技管理员或领导在审核过程中，发现没有提交或者退回的选择按钮，是什么原因？"
+    content = [
+        _dh("常见问题解答", level=1, size=22.0, source="style"),       # 块 0：真标题（6 字）
+        _dp("【解决办法】联系单位科技管理员，进行密码重置。", size=22.0),
+        _dp("【解决办法】项目需先完成集团立项程序。", size=22.0),
+    ] + [
+        _dp(f"问题解答填充第{i}行。", size=22.0) for i in range(6)
+    ] + [
+        _dh(long_q, level=1, size=22.0, source="style"),               # 块 9：早窗外长 L1
+        _dp("【解释】系统设置部分业务，在上传完规定的材料后，才可以提交或退回。", size=22.0),
+    ]
+    md = _mdocx()
+    out = calibrate_levels(content, md, use_height_fallback=False, body_font_size=None)
+    assert md.title == "常见问题解答"
+    heads = {b.text: b.level for b in out if isinstance(b, HeadingNode)}
+    assert heads["常见问题解答"] == 1
+    assert long_q in heads  # 早窗外长 L1 不被卷入竞争降级
+
+
+def test_calibrate_doc_title_demoted_promotion_restores_runs():
+    """（Minor）doc_title 输家降级回 ParagraphNode 时须保留提升前的原始 runs——
+    提升时为满足 HeadingNode.runs 只收 RunNode 做过过滤，降级段落可含
+    InlineFormulaNode（ParagraphNode.runs 合法成员），过滤态不得带出去。"""
+    from document2chunk.ir import InlineFormulaNode
+    formula_para = ParagraphNode(
+        id="p-loser", text="基于能量守恒的变形计算式",
+        runs=[
+            _drun("基于能量守恒的变形计算式", 22.0),
+            InlineFormulaNode(id="f1", latex="E=mc^2"),
+        ],
+        metadata={"centered": True},
+    )
+    content = [
+        formula_para,                                                  # 块 0：提升后在竞争中落败
+        _dp("关于印发某某管理办法（试行）的通知", size=24.0, centered=True),  # 块 1：胜者（文种关键词+更长）
+        _dp("正文内容填充第一段。", size=14.0),
+    ]
+    md = _mdocx()
+    out = calibrate_levels(content, md, use_height_fallback=False, body_font_size=14.0)
+    assert md.title == "关于印发某某管理办法（试行）的通知"
+    loser = [b for b in out if getattr(b, "text", "") == "基于能量守恒的变形计算式"]
+    assert loser and isinstance(loser[0], ParagraphNode)
+    assert any(r.type == "inline_formula" for r in loser[0].runs)  # 原始 runs（含公式）还原
+
+
+def test_calibrate_doc_title_ocr_promotion_window_and_toc_guard():
+    """（Minor·OCR 路径与 DOCX 对齐）OCR 段落提升（高度比≥1.8）补两守卫：
+    「目 录」整词不提升（窗内也如此）+ 仅前 _DOC_TITLE_MAX_BLOCK 块（块 11
+    大字段落不提升）。两守卫挡的是**进入竞争**——若被提升后竞争落败，会以
+    custom["doc_titles"] 留痕，故断其不出现。"""
+    content = [
+        P("自然资源部关于改革完善管理的通知", bbox=(0, 0, 400, 45)),   # 块 0：body_h=20 → 2.25 正常提升
+        P("正文内容文字填充" * 3, bbox=(0, 100, 400, 120)),
+        P("目 录", bbox=(0, 130, 400, 175)),                          # 块 2：目录标题（窗内整词，含关键词）
+    ] + [
+        P("正文内容文字填充" * 3, bbox=(0, 200 + i * 25, 400, 220 + i * 25)) for i in range(8)
+    ] + [
+        P("资料打印费预算明细表", bbox=(0, 420, 400, 465)),             # 块 11：窗外大字段落
+        P("正文内容文字填充" * 3, bbox=(0, 500, 400, 520)),
+    ]
+    md = _md()
+    out = calibrate_levels(content, md)
+    assert md.title == "自然资源部关于改革完善管理的通知"
+    losers = md.custom.get("doc_titles") or []
+    assert "目 录" not in losers            # 整词守卫：根本未被提升入竞争
+    assert "资料打印费预算明细表" not in losers  # 窗守卫：块 11 ≥ 10 未入竞争
+    assert all(b.text != "目 录" for b in out if isinstance(b, HeadingNode))
 
 
 def test_calibrate_style_stack_with_doc_title():
