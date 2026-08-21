@@ -20,9 +20,10 @@
 ## 部署步骤（在 112 上，ssh hpc）
 
 ```bash
-# 1. 拉最新代码（仓库已在 112 上，mineru2doc 也从此构建）
-cd /path/to/document2chunk     # 改成 112 上仓库实际路径
-git pull origin main
+# 1. 拉最新代码（112 连不上 GitHub——GnuTLS -110，改从内网 gitea 拉）
+cd ~/document2chunk
+git pull git@128.23.74.5:dengyongjie/document2chunk.git main
+# （备选：GitHub 通的时候 git pull origin main 也可以）
 
 # 2. 准备 OCR token（PaddleOCR 服务 token，同 :8000 那个）
 export DOCUMENT2CHUNK_OCR_TOKEN=06mPxXt3BEhP6cM6DGlZ9EPdVeUP1ULo1cM5vfuloi8
