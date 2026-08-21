@@ -128,6 +128,108 @@ def test_calibrate_doc_title_position_fallback_keeps_late():
     assert late_title in [b.text for b in out if isinstance(b, HeadingNode)]
 
 
+def test_calibrate_doc_title_fallback_early_short_title():
+    """（issues6 P0 #2 真实样本·附件1汇总）无字号/居中证据（body_font_size=None、
+    无 provenance）时走窄 fallback：块 0 的 6 字真标题「常见问题解答」应胜过
+    块 9 的 39 字无编号长问句——早窗（前 3 块）短标题例外于 len≥8。"""
+    long_q = "单位科技管理员或领导在审核过程中，发现没有提交或者退回的选择按钮，是什么原因？"
+    content = [
+        _dh("常见问题解答", level=1, size=22.0, source="style"),          # 块 0：真标题（6 字）
+        _dh("1.忘记密码，该怎么办？", level=1, size=22.0, source="style"),
+        _dp("【解决办法1】登录平台时，点击【忘记密码】，可利用账号绑定手机进行密码重置。"),
+        _dp("【解决办法2】联系单位科技管理员，进行密码重置。"),
+        _dh("2.项目第一负责人离职或者调去其他单位，想申请调整项目负责人，怎么办？",
+            level=1, size=22.0, source="style"),
+        _dp("【解决办法】交通厅立项项目项目负责人不可修改。"),
+        _dh("3.清单项目什么时候申报？怎么申报？", level=1, size=22.0, source="style"),
+        _dp("【解决办法】项目需先完成集团立项程序。"),
+        _dp("再根据每年省厅发布的填报通知，在填报周期内利用本平台清单项目管理功能。"),
+        _dh(long_q, level=1, size=22.0, source="style"),                  # 块 9：错误候选
+        _dp("【解释】系统设置部分业务，在上传完规定的材料后，才可以提交或退回。"),
+    ]
+    md = _mdocx()
+    out = calibrate_levels(content, md, use_height_fallback=False, body_font_size=None)
+    assert md.title == "常见问题解答"
+    heads = {b.text: b.level for b in out if isinstance(b, HeadingNode)}
+    assert heads["常见问题解答"] == 1
+    # 长问句保持 Heading，未被卷入 doc_title 竞争降级
+    assert long_q in heads
+
+
+def test_calibrate_doc_title_promotion_outranks_weak_fallback():
+    """（issues6 P0 #2 真实样本·FAQ一）真标题是块 0 的 2.48× 大字号段落（未居中）；
+    窄 fallback 会抓到块 13 的无编号长问句（含「规定」关键词、字号比仅 1.0、
+    在前 10 块窗外）。段落提升（强证据）必须先于窄 fallback（弱证据）执行。"""
+    long_q = "【解释】系统设置部分业务，在上传完规定的材料后，才可以提交或退回。"
+    content = [
+        _dp("常见问题解答", size=38.5),                                    # 块 0：真标题段落
+    ] + [
+        _dp(f"正文或问题内容填充第{i}行", size=15.5) for i in range(12)
+    ] + [
+        _dh(long_q, level=1, size=15.5, source="style"),                  # 块 13：弱 fallback 的错误选择
+        _dp("【解决办法】检查审核内容填写的完整性。", size=15.5),
+    ]
+    md = _mdocx()
+    out = calibrate_levels(content, md, use_height_fallback=False, body_font_size=15.5)
+    assert md.title == "常见问题解答"
+    heads = {b.text: b.level for b in out if isinstance(b, HeadingNode)}
+    assert heads["常见问题解答"] == 1
+    assert long_q in heads  # 长问句仍是标题（未被降级）
+
+
+def test_calibrate_doc_title_toc_title_not_promoted():
+    """（issues6 P0 #2 回归样本·粤交集基404号）真标题是 H1 但字号证据不足
+    （15pt/14pt≈1.07，非居中→靠窄 fallback 命中）；「目 录」是居中大字段落
+    （20pt/14pt≈1.43，在提升早窗内）。目录标题不得抢占 doc_title；早窗外
+    的居中大字段落（审批表）一律不提升。"""
+    title = "关于印发《广东省交通集团科技创新“十四五”发展纲要》的通知"
+    content = [
+        _dp("粤交集基〔2022〕404号", size=16.0),                       # 版头文号
+        _dh(title, level=1, size=15.0, source="style"),                # 真标题（弱证据）
+        _dp("直属各单位、本部各部门:", size=14.0),
+        _dp("为适应新形势下的创新驱动发展需求，进一步增强集团科技创新能力。", size=14.0),
+        _dp("附件：广东省交通集团科技创新“十四五”发展纲要", size=14.0),
+        _dp("目 录", size=20.0, centered=True),                        # 目录页标题（早窗内居中大字）
+    ] + [
+        _dp(f"正文内容填充第{i}段，保持常规字号。", size=14.0) for i in range(10)
+    ] + [
+        _dp("审 批 表", size=20.0, centered=True),                     # 早窗外的居中大字（非标题）
+        _dp("第一章 总则 ………………………………………………… 1", size=14.0),
+    ]
+    md = _mdocx()
+    calibrate_levels(content, md, use_height_fallback=False, body_font_size=14.0)
+    assert md.title == title
+    # 目录标题未被提升为 HeadingNode；早窗外大字段落保持 ParagraphNode
+    assert all(b.text != "目 录" for b in content if isinstance(b, HeadingNode))
+    assert all(isinstance(b, ParagraphNode) for b in content if b.text == "审 批 表")
+
+
+def test_calibrate_doc_title_promotion_formula_runs_no_crash():
+    """（799 样本回归·中期技术报告）前 10 块内含行内公式的段落被提升时，
+    runs 里的 InlineFormulaNode 必须被过滤——HeadingNode.runs 只收 RunNode，
+    不过滤即 ValidationError 整文件崩溃。"""
+    from document2chunk.ir import InlineFormulaNode
+    formula_para = ParagraphNode(
+        id="p-formula", text="基于能量守恒的变形计算式",
+        runs=[
+            _drun("基于能量守恒的变形计算式", 22.0),
+            InlineFormulaNode(id="f1", latex="E=mc^2"),
+        ],
+        metadata={"centered": True},
+    )
+    content = [
+        formula_para,
+        _dp("正文内容填充第一段。", size=14.0),
+        _dp("正文内容填充第二段。", size=14.0),
+    ]
+    md = _mdocx()
+    out = calibrate_levels(content, md, use_height_fallback=False, body_font_size=14.0)
+    assert md.title == "基于能量守恒的变形计算式"
+    h = [b for b in out if isinstance(b, HeadingNode) and b.text == "基于能量守恒的变形计算式"]
+    assert h and h[0].level == 1
+    assert all(r.type == "run" for r in h[0].runs)
+
+
 def test_calibrate_style_stack_with_doc_title():
     """有大标题：一、→H2，（一）→H3（level_offset=1）。"""
     content = [

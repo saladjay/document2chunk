@@ -25,7 +25,8 @@ from collections import Counter, defaultdict
 from typing import Any, Dict, List, Optional, Tuple
 
 from document2chunk.ir import (
-    BlockNode, DocumentMetadata, HeadingNode, ParagraphNode, SourceType, TableNode, TocEntry,
+    BlockNode, DocumentMetadata, HeadingNode, ParagraphNode, RunNode, SourceType, TableNode,
+    TocEntry,
 )
 from document2chunk.pipeline.stages.merge import _LIST_MARKER_RE
 
@@ -142,6 +143,11 @@ _TITLE_KEYWORDS = (
 # doc_title 候选的文档位置上限（块索引）：FAQ 类文档全篇问句挂大字样式，
 # 文中长问句凭长度碾压开头短真标题（issues6 根因#2）
 _DOC_TITLE_MAX_BLOCK = 10
+# 窄 fallback 早窗：无字号/居中证据的文档（FAQ 汇总类），文档最顶部（前 3 块）
+# 的 L1 短真标题（「常见问题解答」6 字）例外于 len≥8——位置前于长度（issues6 P0 #2）；
+# 限 level=1：早窗 L2+ 无编号短标题常是普通节标题（非文档标题）
+_DOC_TITLE_EARLY_BLOCK = 3
+_DOC_TITLE_EARLY_MIN_LEN = 4   # 早窗内标题最短长度（挡「前言/目录」等 1-3 字块）
 
 
 def _title_rank(b: BlockNode) -> tuple:
@@ -506,6 +512,13 @@ def _promote_doc_title_paragraphs(
     return out
 
 
+# 目录页标题（「目 录」/「目录」）——永不做 doc_title 段落提升：真标题字号证据
+# 不足的公文（粤交集基404号：H1 字号比仅 1.07，靠窄 fallback 命中），提升序提前后
+# 目录标题（居中大字）会抢占候选（issues6 P0 #2 回归样本）。只匹配整词，不影响
+# 「xx目录」类含关键词的复合标题（_TITLE_KEYWORDS 里的「目录」）。
+_RE_TOC_TITLE = re.compile(r"^目\s*录$")
+
+
 def _promote_doc_title_paragraphs_docx(
     content: List[BlockNode],
     body_font_size: Optional[float],
@@ -514,20 +527,30 @@ def _promote_doc_title_paragraphs_docx(
 
     DOCX 无页几何，但 run 自带真实磅值；公文标题（二号≈22pt）vs 正文
     （三号≈16pt）比≈1.33。提升为 level=2 占位，主循环里胜者再定 H1。
+
+    - 仅限文档前 _DOC_TITLE_MAX_BLOCK 块：提升目标是**文档标题**，它在文档
+      顶部；文中大字段落是封面装饰/表标题/单位名（799 样本实测：不限窗时
+      「资料打印费预算明细表」「注：合计已取整。」等表题被提升成 doc_title）。
+    - 目录页标题（_RE_TOC_TITLE）不提升——它是页面家具，不是文档标题。
+    - runs 过滤为 RunNode：ParagraphNode.runs 容 InlineFormulaNode/HyperlinkNode，
+      HeadingNode.runs 只收 RunNode（799 样本实测含行内公式的段落提升即
+      ValidationError 整文件崩溃，对齐 de50870 的构造点过滤）。
     """
     if not body_font_size or body_font_size <= 0:
         return content
     out: List[BlockNode] = []
-    for b in content:
-        if isinstance(b, ParagraphNode):
+    for i, b in enumerate(content):
+        if isinstance(b, ParagraphNode) and i < _DOC_TITLE_MAX_BLOCK:
             txt = (b.text or "").strip()
             fs = _max_font_size(b)
-            if txt and fs and not style_of(txt) and not RE_APPENDIX.match(txt):
+            if txt and fs and not style_of(txt) and not RE_APPENDIX.match(txt) \
+                    and not _RE_TOC_TITLE.match(txt):
                 ratio = fs / body_font_size
                 centered = bool((b.metadata or {}).get("centered"))
                 if (centered and ratio >= 1.0) or ratio >= DOC_TITLE_EDITED_RATIO:
                     out.append(HeadingNode(
-                        id=b.id, level=2, text=txt, runs=b.runs,
+                        id=b.id, level=2, text=txt,
+                        runs=[r for r in (b.runs or []) if isinstance(r, RunNode)],
                         provenance=b.provenance, metadata=dict(b.metadata or {}),
                     ))
                     continue
@@ -543,12 +566,18 @@ def _detect_doc_title_indices(
     *,
     body_font_size: Optional[float] = None,
     is_docx: bool = False,
+    use_fallback: bool = True,
 ) -> List[int]:
     """从已有 HeadingNode 检测 doc_title 候选索引。
 
     高度检测（OCR ratio≥1.8 / edited 居中+ratio≥1.2）；DOCX 按字号比
-    （max font_size / body_font_size）+ metadata["centered"]。无候选时取首个
-    无编号 L1/L2 + len≥8（窄 fallback）。跨页重复文本（页面家具）排除。
+    （max font_size / body_font_size）+ metadata["centered"]。无候选且
+    use_fallback 时取首个无编号 L1/L2 + len≥8（窄 fallback；前
+    _DOC_TITLE_EARLY_BLOCK 块内放宽到 len≥_DOC_TITLE_EARLY_MIN_LEN——
+    文档最顶部的短真标题）。跨页重复文本（页面家具）排除。
+
+    use_fallback=False 供 calibrate_levels 只取强证据候选：窄 fallback 是
+    弱证据，必须排在大字号段落提升之后（issues6 P0 #2）。
     """
     heading_text_counts: "Counter[str]" = Counter(
         (b.text or "").strip() for b in content if isinstance(b, HeadingNode)
@@ -576,7 +605,7 @@ def _detect_doc_title_indices(
             )
         if ok:
             indices.append(i)
-    if not indices:
+    if not indices and use_fallback:
         for i, b in enumerate(content):
             if not isinstance(b, HeadingNode):
                 continue
@@ -585,7 +614,11 @@ def _detect_doc_title_indices(
                 continue
             if heading_text_counts[txt] > 1:
                 continue
-            if b.level <= 2 and len(txt) >= 8:
+            if b.level <= 2 and (
+                len(txt) >= 8
+                or (i < _DOC_TITLE_EARLY_BLOCK and b.level == 1
+                    and len(txt) >= _DOC_TITLE_EARLY_MIN_LEN)
+            ):
                 indices.append(i)
                 break
     return indices
@@ -689,12 +722,13 @@ def calibrate_levels(
     para_hs = [h for h in para_hs if h > 0]
     body_h = statistics.mode(para_hs) if para_hs else 0.0
 
-    # 0b. doc_title 检测（已有 HeadingNode）
+    # 0b. doc_title 检测（已有 HeadingNode 的强证据：高度/字号比 + 居中）；
+    # 窄 fallback（弱证据）后置到 0d，不得抑制 0c 的段落提升
     is_docx = metadata.source_type == SourceType.DOCX
     toc_map = _build_toc_mapping(toc_entries)
     doc_title_indices = _detect_doc_title_indices(
         content, body_h, page_widths, use_height_fallback,
-        body_font_size=body_font_size, is_docx=is_docx,
+        body_font_size=body_font_size, is_docx=is_docx, use_fallback=False,
     )
     for i in doc_title_indices:
         b = content[i]
@@ -702,14 +736,14 @@ def calibrate_levels(
                  detected="doc_title", action="→候选", reason="heading 检测")
 
     # 0c. 段落提升兜底：OCR 按高度比（R2）；DOCX 按字号比。仅当无 heading 级
-    # 候选时触发，避免竞争性 doc_title 误提升。
+    # 强候选时触发，避免竞争性 doc_title 误提升。
     if not doc_title_indices and use_height_fallback:
         content = _promote_doc_title_paragraphs(
             content, body_h, page_widths=page_widths, use_height_fallback=True
         )
         doc_title_indices = _detect_doc_title_indices(
             content, body_h, page_widths, use_height_fallback,
-            body_font_size=body_font_size, is_docx=is_docx,
+            body_font_size=body_font_size, is_docx=is_docx, use_fallback=False,
         )
         for i in doc_title_indices:
             b = content[i]
@@ -719,12 +753,26 @@ def calibrate_levels(
         content = _promote_doc_title_paragraphs_docx(content, body_font_size)
         doc_title_indices = _detect_doc_title_indices(
             content, body_h, page_widths, use_height_fallback,
-            body_font_size=body_font_size, is_docx=True,
+            body_font_size=body_font_size, is_docx=True, use_fallback=False,
         )
         for i in doc_title_indices:
             b = content[i]
             _log_add(section="calibrate", block_id=b.id, text=(b.text or "")[:40],
                      detected="doc_title(promoted)", action="→候选", reason="DOCX 字号比提升")
+
+    # 0d. 窄 fallback（弱证据：首个无编号 L1/L2 长标题，早窗放宽最短长度）——
+    # 排在段落提升之后：大字号段落是强证据，不得被弱 fallback 抢先抑制
+    # （issues6 P0 #2 FAQ一：真标题是 2.48× 段落，旧序因 fallback 抓到文中
+    # 长问句而从未走到段落提升）
+    if not doc_title_indices:
+        doc_title_indices = _detect_doc_title_indices(
+            content, body_h, page_widths, use_height_fallback,
+            body_font_size=body_font_size, is_docx=is_docx,
+        )
+        for i in doc_title_indices:
+            b = content[i]
+            _log_add(section="calibrate", block_id=b.id, text=(b.text or "")[:40],
+                     detected="doc_title(fallback)", action="→候选", reason="窄 fallback（首无编号标题）")
 
     # 0e. 位置约束（issues6 根因#2）：doc_title 候选限文档前 K 块；前 K 块无候选
     # 时保留原候选集（版头占多块/标题靠后的文档不丢 doc_title）
