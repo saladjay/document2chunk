@@ -349,6 +349,77 @@ def test_calibrate_doc_title_ocr_promotion_window_and_toc_guard():
     assert all(b.text != "目 录" for b in out if isinstance(b, HeadingNode))
 
 
+def test_calibrate_doc_title_ocr_promotion_formula_runs_no_crash():
+    """（OCR 形状·对齐 DOCX 路径）OCR _text_to_runs 产出 RunNode/InlineFormulaNode
+    交替的 runs；高度比提升路径构造 HeadingNode 时原样透传 → 含公式 run 的段落
+    被提升即 ValidationError 整文件崩溃（DOCX 路径 de50870 已过滤，OCR 路径漏）。"""
+    from document2chunk.ir import InlineFormulaNode, RunNode
+    formula_para = ParagraphNode(
+        id="op-crash", text="总平面布置方案",
+        runs=[RunNode(id="r1", text="总平面布置"), InlineFormulaNode(id="f1", latex="x")],
+        provenance=_prov((0, 0, 400, 40)),                    # 高 40 / body 20 → 2.0 ≥ 1.8
+    )
+    content = [
+        formula_para,
+        P("正文内容文字填充" * 3, bbox=(0, 100, 400, 120)),
+        P("正文内容文字填充" * 3, bbox=(0, 200, 400, 220)),
+    ]
+    md = _md()
+    out = calibrate_levels(content, md)                       # use_height_fallback 默认 True
+    assert md.title == "总平面布置方案"
+    h = [b for b in out if isinstance(b, HeadingNode) and b.text == "总平面布置方案"]
+    assert h and h[0].level == 1
+    assert all(r.type == "run" for r in h[0].runs)            # 公式不进 heading runs
+
+
+def test_calibrate_doc_title_ocr_demoted_promotion_restores_runs():
+    """（OCR 形状·降级还原）OCR 提升路径过滤 runs 后，竞争中落败降级回
+    ParagraphNode 须还原原始 runs——否则公式 run 永久丢失（对照 DOCX 路径
+    promoted_orig_runs 的还原写法）。"""
+    from document2chunk.ir import InlineFormulaNode, RunNode
+    loser = ParagraphNode(
+        id="op-loser", text="基于能量守恒的变形计算式",
+        runs=[RunNode(id="r1", text="基于能量守恒的变形计算式"),
+              InlineFormulaNode(id="f1", latex="E=mc^2")],
+        provenance=_prov((0, 0, 400, 40)),
+    )
+    content = [
+        loser,                                                   # 块 0：提升后竞争中落败
+        P("关于印发某某管理办法试行的通知标题", bbox=(0, 60, 400, 100)),  # 块 1：胜者（文种关键词+更长）
+        P("正文内容文字填充" * 3, bbox=(0, 200, 400, 220)),
+        P("正文内容文字填充" * 3, bbox=(0, 300, 400, 320)),
+        P("正文内容文字填充" * 3, bbox=(0, 400, 400, 420)),
+    ]
+    md = _md()
+    out = calibrate_levels(content, md)
+    assert md.title == "关于印发某某管理办法试行的通知标题"
+    loser_out = [b for b in out if getattr(b, "text", "") == "基于能量守恒的变形计算式"]
+    assert loser_out and isinstance(loser_out[0], ParagraphNode)
+    assert any(r.type == "inline_formula" for r in loser_out[0].runs)  # 原始 runs（含公式）还原
+
+
+def test_calibrate_doc_title_fallback_after_promoted_not_pooled():
+    """（钉住并入位置前提）fallback 候选须**先于**首个提升候选才并入同场竞争：
+    块 0 弱证据真标题（9 字）经 OCR 高比路径提升后，其后的无编号含文种长候选
+    （len≥8、带「办法/通知」、前 10 块窗内）不得入池凭 _title_rank 反超——
+    位置前于长度。几何对齐 :815 注释的查重智能体实证（块 0 提升 vs 块 1 问句）：
+    提升块在早窗内本身即 fallback 早窗候选，紧随其后的长问句是唯一能被选中
+    又落在提升者之后的 fallback 形状。"""
+    title = "查重智能体测试问题"
+    long_q = "单位管理员在审核过程中发现没有提交或者退回的处理办法和通知要求是什么呢"
+    content = [
+        P(title, bbox=(0, 0, 400, 45)),                        # 块 0：45/20=2.25 → 提升
+        H(long_q, level=1, bbox=(0, 100, 400, 120)),           # 块 1：fallback 候选（高度比不足）
+        P("正文内容文字填充" * 3, bbox=(0, 150, 400, 170)),
+        P("正文内容文字填充" * 3, bbox=(0, 200, 400, 220)),
+        P("正文内容文字填充" * 3, bbox=(0, 250, 400, 270)),
+    ]
+    md = _md()
+    out = calibrate_levels(content, md)
+    assert md.title == title                                   # fallback 不入池，提升者胜
+    assert long_q in [b.text for b in out if isinstance(b, HeadingNode)]  # 未被卷入竞争降级
+
+
 def test_calibrate_style_stack_with_doc_title():
     """有大标题：一、→H2，（一）→H3（level_offset=1）。"""
     content = [

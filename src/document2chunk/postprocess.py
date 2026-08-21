@@ -488,7 +488,7 @@ def _promote_doc_title_paragraphs(
     *,
     page_widths: Optional[Dict[int, float]],
     use_height_fallback: bool,
-) -> List[BlockNode]:
+) -> Tuple[List[BlockNode], Dict[str, list]]:
     """doc_title 提升（修 R2）：仅 OCR（use_height_fallback=True）。
 
     OCR 无上游 ClassificationStage，文档大标题常被服务标成 text → ParagraphNode，
@@ -500,10 +500,16 @@ def _promote_doc_title_paragraphs(
     与 DOCX 路径一致的两守卫（799/实测回归）：仅文档前 _DOC_TITLE_MAX_BLOCK 块
     （提升目标是文档标题，在文档顶部；远处大字是表题/封面装饰）；目录页标题
     （_RE_TOC_TITLE）不提升（页面家具）。
+
+    runs 过滤为 RunNode（与 DOCX 路径一致）：OCR 的 _text_to_runs 产出
+    RunNode/InlineFormulaNode 交替 runs，HeadingNode.runs 只收 RunNode，不过滤
+    即 ValidationError 整文件崩溃（对齐 de50870 的构造点过滤）。原始 runs 经
+    返回值 orig_runs 传出——竞争中落败降级回 ParagraphNode 时还原。
     """
     if body_h <= 0 or not use_height_fallback:
-        return content
+        return content, {}
     out: List[BlockNode] = []
+    orig_runs: Dict[str, list] = {}
     for i, b in enumerate(content):
         if isinstance(b, ParagraphNode) and i < _DOC_TITLE_MAX_BLOCK:
             txt = (b.text or "").strip()
@@ -512,14 +518,15 @@ def _promote_doc_title_paragraphs(
                 h = _bbox_h(b)
                 ratio = h / body_h if body_h else 0.0
                 if ratio >= DOC_TITLE_RATIO:
+                    orig_runs[b.id] = list(b.runs or [])
                     out.append(HeadingNode(
                         id=b.id, level=1, text=txt,
-                        runs=getattr(b, "runs", []),
-                        provenance=b.provenance, metadata=getattr(b, "metadata", {}),
+                        runs=[r for r in (b.runs or []) if isinstance(r, RunNode)],
+                        provenance=b.provenance, metadata=dict(b.metadata or {}),
                     ))
                     continue
         out.append(b)
-    return out
+    return out, orig_runs
 
 
 # 目录页标题（「目 录」/「目录」）——永不做 doc_title 段落提升：真标题字号证据
@@ -772,12 +779,14 @@ def calibrate_levels(
                  detected="doc_title", action="→候选", reason="heading 检测")
 
     # 0c. 段落提升兜底：OCR 按高度比（R2）；DOCX 按字号比。仅当无 heading 级
-    # 强候选时触发，避免竞争性 doc_title 误提升。
+    # 强候选时触发，避免竞争性 doc_title 误提升。两路的 orig_runs 汇入同一
+    # promoted_orig_runs——降级还原共用一处（:904 附近）。
     promoted_orig_runs: Dict[str, list] = {}
     if not doc_title_indices and use_height_fallback:
-        content = _promote_doc_title_paragraphs(
+        content, ocr_orig_runs = _promote_doc_title_paragraphs(
             content, body_h, page_widths=page_widths, use_height_fallback=True
         )
+        promoted_orig_runs.update(ocr_orig_runs)
         doc_title_indices = _detect_doc_title_indices(
             content, body_h, page_widths, use_height_fallback,
             body_font_size=body_font_size, is_docx=is_docx, use_fallback=False,
@@ -787,7 +796,8 @@ def calibrate_levels(
             _log_add(section="calibrate", block_id=b.id, text=(b.text or "")[:40],
                      detected="doc_title(promoted)", action="→候选", reason="R2 段落提升")
     if not doc_title_indices and is_docx:
-        content, promoted_orig_runs = _promote_doc_title_paragraphs_docx(content, body_font_size)
+        content, docx_orig_runs = _promote_doc_title_paragraphs_docx(content, body_font_size)
+        promoted_orig_runs.update(docx_orig_runs)
         doc_title_indices = _detect_doc_title_indices(
             content, body_h, page_widths, use_height_fallback,
             body_font_size=body_font_size, is_docx=True, use_fallback=False,
