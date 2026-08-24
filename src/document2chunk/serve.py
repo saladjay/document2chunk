@@ -12,10 +12,13 @@
 from __future__ import annotations
 
 import io
+import logging
 import os
+import re
 import shutil
 import tempfile
 import zipfile
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Optional, Union
 
@@ -30,6 +33,47 @@ from document2chunk.ir import (
 )
 
 _DEMOTE_MAX_HEADING_LEN = 60  # demote：标题文本超此且以句号结尾 → 降为正文
+
+logger = logging.getLogger(__name__)
+
+# 落盘留痕目录名净化：仅留字母数字/中文/./-/_（\w unicode 覆盖中文），其余替换 _
+_SAVE_NAME_BAD_CHARS = re.compile(r"[^\w.\-]")
+_SAVE_NAME_MAX_LEN = 80
+
+
+def _sanitize_save_name(name: Optional[str]) -> str:
+    """落盘子目录名净化：非法字符换 _，截断 80 字符，空名 → unnamed。"""
+    cleaned = _SAVE_NAME_BAD_CHARS.sub("_", name or "")[:_SAVE_NAME_MAX_LEN]
+    return cleaned or "unnamed"
+
+
+def _save_zip_artifacts(
+    save_dir: str, filename: Optional[str], data: bytes, zip_bytes: bytes
+) -> None:
+    """输出落盘留痕（线上排查 Chai 对接差异）：
+
+    save_dir/<时间戳__净化名>/ 下写 request.bin（收到的原始字节）、
+    response.zip（返回的 zip 字节）、以及从 zip 解包的 result.md + images/。
+    任何失败只 log warning，绝不影响解析主流程。
+    """
+    try:
+        ts = datetime.now().strftime("%Y%m%d-%H%M%S-%f")
+        req_dir = Path(save_dir) / f"{ts}__{_sanitize_save_name(filename)}"
+        req_dir.mkdir(parents=True, exist_ok=True)
+        (req_dir / "request.bin").write_bytes(bytes(data))
+        (req_dir / "response.zip").write_bytes(zip_bytes)
+        with zipfile.ZipFile(io.BytesIO(zip_bytes)) as zf:
+            for info in zf.infolist():
+                if info.is_dir():
+                    continue
+                target = req_dir / info.filename
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_bytes(zf.read(info))
+    except Exception as e:  # noqa: BLE001 —— 留痕失败绝不上抛
+        logger.warning(
+            "输出落盘留痕失败（不影响解析）save_dir=%s name=%r: %s: %s",
+            save_dir, filename, type(e).__name__, e,
+        )
 
 
 def _is_md_name(name: Optional[str]) -> bool:
@@ -196,8 +240,12 @@ def parse_to_zip(
     image_dir_name: str = "images",
     demote: bool = False,
     source_type: Any = None,  # noqa: F821
+    save_dir: Optional[str] = None,
 ) -> bytes:
-    """zip 模式：解析 data，返回 zip 字节流（根目录 result.md + images/）。"""
+    """zip 模式：解析 data，返回 zip 字节流（根目录 result.md + images/）。
+
+    save_dir 非空时落盘留痕（request.bin + response.zip + 解包产物），失败仅告警。
+    """
     from document2chunk.api import _route_source_type
 
     if _is_md_name(filename):
@@ -205,14 +253,20 @@ def parse_to_zip(
         buf = io.BytesIO()
         with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
             zf.writestr("result.md", data)
-        return buf.getvalue()
+        zip_bytes = buf.getvalue()
+        if save_dir:
+            _save_zip_artifacts(save_dir, filename, data, zip_bytes)
+        return zip_bytes
 
     if _is_txt_name(filename):
         # .txt 转录：不进 extractor/postprocess，转 UTF-8 无 BOM 后打包（区别于 .md 的字节直通）
         buf = io.BytesIO()
         with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
             zf.writestr("result.md", _txt_to_utf8(data))
-        return buf.getvalue()
+        zip_bytes = buf.getvalue()
+        if save_dir:
+            _save_zip_artifacts(save_dir, filename, data, zip_bytes)
+        return zip_bytes
 
     tmp = Path(tempfile.mkdtemp(prefix="d2c_zip_"))
     try:
@@ -237,7 +291,10 @@ def parse_to_zip(
                     if img.is_file():
                         arc = img.relative_to(tmp).as_posix()  # images/xxx.png
                         zf.write(img, arc)
-        return buf.getvalue()
+        zip_bytes = buf.getvalue()
+        if save_dir:
+            _save_zip_artifacts(save_dir, filename, data, zip_bytes)
+        return zip_bytes
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
 

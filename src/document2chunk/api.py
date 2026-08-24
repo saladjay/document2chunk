@@ -384,8 +384,12 @@ def create_app():
         if upload is None:
             raise HTTPException(status_code=400, detail="zip 模式缺少 file 字段")
         data = await upload.read()
+        # 输出落盘留痕（线上排查用）：DOCUMENT2CHUNK_SAVE_OUTPUT_DIR 未设置则 None、零行为变化
+        save_dir = os.environ.get("DOCUMENT2CHUNK_SAVE_OUTPUT_DIR") or None
         try:
-            zip_bytes = serve.parse_to_zip(data, getattr(upload, "filename", None), demote=demote)
+            zip_bytes = serve.parse_to_zip(
+                data, getattr(upload, "filename", None), demote=demote, save_dir=save_dir
+            )
         except Exception as exc:  # noqa: BLE001
             raise HTTPException(status_code=500, detail=f"{type(exc).__name__}: {exc}") from exc
         from fastapi.responses import Response

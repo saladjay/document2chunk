@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import io
+import re
 import zipfile
 
 import pytest
@@ -182,3 +183,58 @@ def test_parse_to_zip_md_none_filename_unsupported():
     """filename=None 的 bytes 无扩展名依据，不判 md，维持报错。"""
     with pytest.raises(UnsupportedFormatError):
         serve.parse_to_zip(b"# x", None)
+
+
+# ------------------------------------------------------------------
+# save_dir 输出落盘留痕：/parse-pdf 线上排查（收原件 + 响应 zip + 产物）
+# ------------------------------------------------------------------
+
+
+def test_parse_to_zip_save_dir_writes_artifacts(tmp_path):
+    """save_dir 落盘留痕：恰一个「时间戳__净化名」子目录，三件套齐全。
+
+    覆盖 md 直通与 docx 主流程两条返回路径（真实 /parse-pdf 请求）。
+    """
+    # 分支 1：.md 直通
+    md_root = tmp_path / "md"
+    md_root.mkdir()
+    zip_bytes = serve.parse_to_zip(MD_BYTES, "t.md", save_dir=str(md_root))
+    subs = [p for p in md_root.iterdir() if p.is_dir()]
+    assert len(subs) == 1, [p.name for p in subs]
+    sub = subs[0]
+    assert re.fullmatch(r"\d{8}-\d{6}-\d{6}__t\.md", sub.name), sub.name
+    assert (sub / "request.bin").read_bytes() == MD_BYTES
+    resp = (sub / "response.zip").read_bytes()
+    assert resp == zip_bytes
+    z = zipfile.ZipFile(io.BytesIO(resp))  # response.zip 是合法 zip
+    assert z.read("result.md") == MD_BYTES
+    assert (sub / "result.md").read_bytes() == MD_BYTES
+
+    # 分支 2：docx 主流程（走 extractor/postprocess 的完整解析）
+    docx_root = tmp_path / "docx"
+    docx_root.mkdir()
+    zip2 = serve.parse_to_zip(DOCX_BYTES, "t.docx", save_dir=str(docx_root))
+    subs2 = [p for p in docx_root.iterdir() if p.is_dir()]
+    assert len(subs2) == 1, [p.name for p in subs2]
+    sub2 = subs2[0]
+    assert re.fullmatch(r"\d{8}-\d{6}-\d{6}__t\.docx", sub2.name), sub2.name
+    assert (sub2 / "request.bin").read_bytes() == DOCX_BYTES
+    assert (sub2 / "response.zip").read_bytes() == zip2
+    assert "测试文档正文段落" in (sub2 / "result.md").read_text(encoding="utf-8")
+
+
+def test_parse_to_zip_save_dir_failure_not_fatal(tmp_path):
+    """save_dir 非法（含 NUL 字节的路径，任何平台必败）：只告警不抛，解析正常返回。"""
+    bad_dir = str(tmp_path / "a\x00b")  # embedded null byte → OSError/ValueError
+    zip_bytes = serve.parse_to_zip(MD_BYTES, "t.md", save_dir=bad_dir)
+    z = zipfile.ZipFile(io.BytesIO(zip_bytes))
+    assert z.namelist() == ["result.md"]
+    assert z.read("result.md") == MD_BYTES
+
+
+def test_parse_to_zip_save_dir_default_off():
+    """不传 save_dir：行为与现状完全一致（无落盘副作用），返回合法 zip。"""
+    zip_bytes = serve.parse_to_zip(MD_BYTES, "t.md")
+    z = zipfile.ZipFile(io.BytesIO(zip_bytes))
+    assert z.namelist() == ["result.md"]
+    assert z.read("result.md") == MD_BYTES
