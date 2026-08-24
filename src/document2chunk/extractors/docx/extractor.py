@@ -107,20 +107,6 @@ def _export_media(reader: PackageReader, blocks, image_dir) -> None:
         img.image_id = name
 
 
-def _iter_anchored_images(blocks) -> Iterator[Tuple[ImageNode, int]]:
-    """递归遍历块序列，产出 (ImageNode, block_index)，保持顺序。"""
-    for idx, b in enumerate(blocks):
-        if isinstance(b, ImageNode):
-            yield b, idx
-        elif isinstance(b, TableNode):
-            for row in b.rows:
-                for cell in row.cells:
-                    yield from _iter_anchored_images(cell.blocks)
-        elif isinstance(b, ListNode):
-            for item in b.items:
-                yield from _iter_anchored_images(item.blocks)
-
-
 def _group_overlapping_images(
     blocks: List[BlockNode],
 ) -> List[Tuple[ImageNode, List[ImageNode], List[int]]]:
@@ -128,18 +114,20 @@ def _group_overlapping_images(
 
     返回 [(base_image, [overlay_images], [overlay_block_indices])] 列表。
     算法：每个前景标注关联其前方最近的背景截图，形成组。
+
+    仅收集**顶层** ImageNode：表格/列表内嵌的锚定图保守不参与——嵌套索引
+    与顶层移除索引空间不一致，参与会在移除时误删无关顶层块。
     """
     # 收集顶层顺序的 ImageNode 及其位置
-    ordered: List[Tuple[ImageNode, int]] = []
-    for img, idx in _iter_anchored_images(blocks):
-        if img.anchor_behind_doc is not None:
-            ordered.append((img, idx))
+    ordered: List[Tuple[ImageNode, int]] = [
+        (b, i) for i, b in enumerate(blocks)
+        if isinstance(b, ImageNode) and b.anchor_behind_doc is not None
+    ]
 
     if not ordered:
         return []
 
     # 每个前景图关联其前方最近的背景图
-    from collections import defaultdict
     groups_map: dict = {}  # base_id -> (base_img, [overlays], [indices])
     last_base: Optional[ImageNode] = None
     last_base_idx: int = -1

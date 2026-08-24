@@ -947,3 +947,24 @@ def test_inline_images_not_affected():
     assert len(imgs) == 1
     assert imgs[0].anchor_behind_doc is None
     assert not imgs[0].metadata.get("composited")
+
+
+def test_group_ignores_nested_anchored_images():
+    """表格内嵌锚定图保守不参与分组（审查修复回归）。
+
+    嵌套图的 enumerate 索引是 cell.blocks 内索引，与顶层移除索引空间
+    不一致——参与分组会在移除前景时误删无关顶层块（如整段正文/整张表）。
+    """
+    from document2chunk.extractors.docx.extractor import _group_overlapping_images
+    from document2chunk.ir import ParagraphNode, TableCellNode, TableRowNode
+
+    bg = ImageNode(id="img_bg", image_id="rId2", anchor_behind_doc=True,
+                   anchor_pos_h_emu=0, anchor_pos_v_emu=0,
+                   width_emu=5486400, height_emu=2743200)
+    fg = ImageNode(id="img_fg", image_id="rId3", anchor_behind_doc=False,
+                   anchor_pos_h_emu=1000000, anchor_pos_v_emu=500000,
+                   width_emu=457200, height_emu=457200)
+    table = TableNode(id="t1", rows=[TableRowNode(id="tr1", cells=[
+        TableCellNode(id="tc1", blocks=[fg])])])
+    blocks = [bg, table, ParagraphNode(id="p1", text="正文段落")]
+    assert _group_overlapping_images(blocks) == []

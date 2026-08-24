@@ -490,7 +490,8 @@ class DocumentParser:
                     anchor = drawing.find(f".//{{{WP}}}anchor")
                     if anchor is not None:
                         behind_val = anchor.get("behindDoc", "0")
-                        behind_doc = behind_val == "1"
+                        # ST_OnOff 允许 "1"/"true"（Word 写 0/1，第三方生成器可能写 true）
+                        behind_doc = behind_val in ("1", "true")
                         ph = anchor.find(f"{{{WP}}}positionH")
                         if ph is not None:
                             pos_h_rel = ph.get("relativeFrom")
