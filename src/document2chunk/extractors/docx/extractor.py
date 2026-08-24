@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
+import io
 import logging
 from collections import Counter
 from pathlib import Path
-from typing import Iterator, List, Optional
+from typing import Iterator, List, Optional, Tuple
 
 from document2chunk.exceptions import Document2ChunkError
 from document2chunk.extractors.docx.package_reader import PackageReader
@@ -24,6 +25,13 @@ from document2chunk.ir import (
 )
 
 _logger = logging.getLogger(__name__)
+
+# 图片合成：EMU → 像素转换系数 (1 inch = 914400 EMU)
+_EMU_PER_INCH = 914400
+# 合成组内最大段落间距（背景→前景，覆盖整页截图+多段文字场景）
+_MAX_GROUP_PARA_GAP = 80
+# 前景标注面积占比上限（超过则不作为标注合成）
+_OVERLAY_AREA_RATIO = 0.5
 
 
 class InvalidDocxError(Document2ChunkError):
@@ -99,6 +107,197 @@ def _export_media(reader: PackageReader, blocks, image_dir) -> None:
         img.image_id = name
 
 
+def _iter_anchored_images(blocks) -> Iterator[Tuple[ImageNode, int]]:
+    """递归遍历块序列，产出 (ImageNode, block_index)，保持顺序。"""
+    for idx, b in enumerate(blocks):
+        if isinstance(b, ImageNode):
+            yield b, idx
+        elif isinstance(b, TableNode):
+            for row in b.rows:
+                for cell in row.cells:
+                    yield from _iter_anchored_images(cell.blocks)
+        elif isinstance(b, ListNode):
+            for item in b.items:
+                yield from _iter_anchored_images(item.blocks)
+
+
+def _group_overlapping_images(
+    blocks: List[BlockNode],
+) -> List[Tuple[ImageNode, List[ImageNode], List[int]]]:
+    """识别重叠图片组：背景截图 + 前景标注。
+
+    返回 [(base_image, [overlay_images], [overlay_block_indices])] 列表。
+    算法：每个前景标注关联其前方最近的背景截图，形成组。
+    """
+    # 收集顶层顺序的 ImageNode 及其位置
+    ordered: List[Tuple[ImageNode, int]] = []
+    for img, idx in _iter_anchored_images(blocks):
+        if img.anchor_behind_doc is not None:
+            ordered.append((img, idx))
+
+    if not ordered:
+        return []
+
+    # 每个前景图关联其前方最近的背景图
+    from collections import defaultdict
+    groups_map: dict = {}  # base_id -> (base_img, [overlays], [indices])
+    last_base: Optional[ImageNode] = None
+    last_base_idx: int = -1
+
+    for img, idx in ordered:
+        if img.anchor_behind_doc is True:
+            last_base = img
+            last_base_idx = idx
+            if img.id not in groups_map:
+                groups_map[img.id] = (img, [], [])
+        elif img.anchor_behind_doc is False and last_base is not None:
+            # 检查段落间距
+            if idx - last_base_idx > _MAX_GROUP_PARA_GAP:
+                continue
+            # 检查面积比
+            if (
+                last_base.width_emu
+                and last_base.height_emu
+                and img.width_emu
+                and img.height_emu
+            ):
+                base_area = last_base.width_emu * last_base.height_emu
+                overlay_area = img.width_emu * img.height_emu
+                if base_area > 0 and overlay_area / base_area >= _OVERLAY_AREA_RATIO:
+                    continue  # 面积过大，不作为标注
+            grp = groups_map[last_base.id]
+            grp[1].append(img)
+            grp[2].append(idx)
+
+    # 只返回有前景标注的组
+    return [(base, ovs, idxs) for base, ovs, idxs in groups_map.values() if ovs]
+
+
+def _composite_overlapping_images(
+    reader: PackageReader,
+    blocks: List[BlockNode],
+    image_dir: Optional[str],
+) -> List[BlockNode]:
+    """合成重叠的锚定图片：背景截图 + 前景标注 → 单张合成图。
+
+    对每组重叠图片：
+    1. 加载背景图原始像素
+    2. 将前景标注按相对位置贴入背景
+    3. 保存合成图并替换原背景 ImageNode
+    4. 从块序列中移除前景 ImageNode
+    """
+    try:
+        from PIL import Image as PILImage
+    except ImportError:
+        _logger.debug("Pillow 未安装，跳过图片合成")
+        return blocks
+
+    groups = _group_overlapping_images(blocks)
+    if not groups:
+        return blocks
+
+    out_dir = Path(image_dir) if image_dir else None
+    remove_ids: set = set()
+
+    for base, overlays, overlay_indices in groups:
+        # 加载背景图原始数据
+        base_info = reader.media_info_for_rel(base.image_id)
+        if base_info is None:
+            continue
+        base_name, base_data, base_ext = base_info
+
+        try:
+            bg_img = PILImage.open(io.BytesIO(base_data))
+            if bg_img.mode != "RGBA":
+                bg_img = bg_img.convert("RGBA")
+        except Exception as e:
+            _logger.warning("背景图加载失败 (%s): %s", base_name, e)
+            continue
+
+        bg_w, bg_h = bg_img.size
+        base_width_emu = base.width_emu or _EMU_PER_INCH
+        base_height_emu = base.height_emu or _EMU_PER_INCH
+        # EMU → 像素缩放
+        scale_x = bg_w / base_width_emu
+        scale_y = bg_h / base_height_emu
+        base_pos_h = base.anchor_pos_h_emu or 0
+
+        composited = False
+        for ov in overlays:
+            ov_info = reader.media_info_for_rel(ov.image_id)
+            if ov_info is None:
+                continue
+            _, ov_data, ov_ext = ov_info
+
+            try:
+                fg_img = PILImage.open(io.BytesIO(ov_data))
+                if fg_img.mode != "RGBA":
+                    fg_img = fg_img.convert("RGBA")
+            except Exception as e:
+                _logger.warning("前景图加载失败 (%s): %s", ov.image_id, e)
+                continue
+
+            # 计算前景在背景上的像素位置
+            fg_w_emu = ov.width_emu or 0
+            fg_h_emu = ov.height_emu or 0
+
+            # 缩放前景到与背景相同的比例
+            fg_pixel_w = max(1, int(fg_w_emu * scale_x))
+            fg_pixel_h = max(1, int(fg_h_emu * scale_y))
+            fg_resized = fg_img.resize((fg_pixel_w, fg_pixel_h), PILImage.LANCZOS)
+
+            # 水平位置：基于 column 偏移差
+            fg_pos_h = ov.anchor_pos_h_emu or 0
+            offset_x = int((fg_pos_h - base_pos_h) * scale_x)
+            offset_x = max(0, min(offset_x, bg_w - fg_pixel_w))
+
+            # 垂直位置：使用段落内偏移，限制在背景范围内
+            fg_pos_v = ov.anchor_pos_v_emu or 0
+            offset_y = int(fg_pos_v * scale_y)
+            offset_y = max(0, min(offset_y, bg_h - fg_pixel_h))
+
+            bg_img.paste(fg_resized, (offset_x, offset_y), fg_resized)
+            composited = True
+
+        if not composited:
+            continue
+
+        # 保存合成图
+        composite_name = base_name.rsplit(".", 1)[0] + "_composite.png"
+        composite_data = io.BytesIO()
+        bg_img.save(composite_data, format="PNG")
+        composite_bytes = composite_data.getvalue()
+
+        if out_dir is not None:
+            try:
+                out_dir.mkdir(parents=True, exist_ok=True)
+                (out_dir / composite_name).write_bytes(composite_bytes)
+            except OSError as e:
+                _logger.warning("合成图保存失败 %s: %s", composite_name, e)
+                continue
+
+        # 更新 base ImageNode
+        base.image_id = composite_name
+        base.format = "png"
+        base.data = composite_bytes
+        base.metadata["composited"] = True
+        base.metadata["overlay_count"] = len(overlays)
+
+        # 标记前景图待移除
+        remove_ids.update(overlay_indices)
+
+        _logger.info(
+            "图片合成: %s + %d 张标注 → %s",
+            base_name, len(overlays), composite_name,
+        )
+
+    # 移除前景 ImageNode 块
+    if remove_ids:
+        blocks = [b for idx, b in enumerate(blocks) if idx not in remove_ids]
+
+    return blocks
+
+
 class DocxExtractor:
     """可编辑 .docx 提取器。"""
 
@@ -128,6 +327,10 @@ class DocxExtractor:
             heuristic_headings=heuristic_headings,
         )
         blocks, toc_entries = parser.parse(doc_elem)
+
+        # 图片合成：重叠锚定图片（背景截图 + 前景标注）合成（需在媒体落盘前）
+        if image_dir is not None:
+            blocks = _composite_overlapping_images(reader, blocks, image_dir)
 
         # 媒体落盘（仅被引用媒体；IR 不引磁盘路径）
         if image_dir is not None:

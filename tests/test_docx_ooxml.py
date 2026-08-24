@@ -726,3 +726,224 @@ def test_sdt_toc_entries_collected():
     assert "第一章 概述" in content_texts  # 正文标题还在
     # TOC 中的 "第二章 详细设计" 不应作为正文出现
     assert not any("详细设计" in t for t in content_texts)
+
+
+# ---------- 图片合成（锚定重叠图片）----------
+
+def _make_png(w: int, h: int, color=(255, 0, 0, 128)) -> bytes:
+    """创建简单 PNG 图片字节。"""
+    from PIL import Image as PILImage
+    img = PILImage.new("RGBA", (w, h), color)
+    buf = io.BytesIO()
+    img.save(buf, format="PNG")
+    return buf.getvalue()
+
+
+def _make_jpeg(w: int, h: int, color=(200, 200, 200)) -> bytes:
+    """创建简单 JPEG 图片字节。"""
+    from PIL import Image as PILImage
+    img = PILImage.new("RGB", (w, h), color)
+    buf = io.BytesIO()
+    img.save(buf, format="JPEG")
+    return buf.getvalue()
+
+
+def test_image_anchor_metadata_collected():
+    """解析器应收集锚定图片的定位元数据（behindDoc/posH/posV）。"""
+    doc = f"""<w:document {DOC_NS}>
+      <w:body>
+        <w:p>
+          <w:r><w:drawing>
+            <wp:anchor behindDoc="1" distT="0" distB="0" distL="0" distR="0">
+              <wp:positionH relativeFrom="column"><wp:posOffset>8890</wp:posOffset></wp:positionH>
+              <wp:positionV relativeFrom="paragraph"><wp:posOffset>780415</wp:posOffset></wp:positionV>
+              <wp:extent cx="5303520" cy="2438400"/>
+              <wp:docPr id="1" name="bg"/>
+              <a:graphic><a:graphicData>
+                <pic:pic xmlns:pic="http://schemas.openxmlformats.org/drawingml/2006/picture">
+                  <pic:blipFill><a:blip r:embed="rId2"/></pic:blipFill>
+                  <pic:spPr><a:xfrm><a:ext cx="5303520" cy="2438400"/></a:xfrm></pic:spPr>
+                </pic:pic>
+              </a:graphicData></a:graphic>
+            </wp:anchor>
+          </w:drawing></w:r>
+        </w:p>
+      </w:body>
+    </w:document>"""
+    media = {"word/media/image1.jpeg": _make_jpeg(800, 400)}
+    rels = (
+        '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
+        '<Relationship Id="rId2" '
+        'Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" '
+        'Target="media/image1.jpeg"/></Relationships>'
+    )
+    ext = DocxExtractor()
+    result = ext.extract(make_docx(doc, media=media, rels_xml=rels))
+    imgs = [b for b in result.content if isinstance(b, ImageNode)]
+    assert len(imgs) == 1
+    assert imgs[0].anchor_behind_doc is True
+    assert imgs[0].anchor_pos_h_emu == 8890
+    assert imgs[0].anchor_pos_v_emu == 780415
+    assert imgs[0].anchor_pos_h_rel == "column"
+
+
+def test_overlapping_images_composited():
+    """背景截图 + 前景标注应合成为单张图片。"""
+    # 背景图：大 JPEG (behindDoc=1)
+    # 前景标注：小 PNG (behindDoc=0)
+    doc = f"""<w:document {DOC_NS}>
+      <w:body>
+        <w:p>
+          <w:r><w:drawing>
+            <wp:anchor behindDoc="1" distT="0" distB="0" distL="0" distR="0">
+              <wp:positionH relativeFrom="column"><wp:posOffset>0</wp:posOffset></wp:positionH>
+              <wp:positionV relativeFrom="paragraph"><wp:posOffset>0</wp:posOffset></wp:positionV>
+              <wp:extent cx="5486400" cy="2743200"/>
+              <wp:docPr id="1" name="background"/>
+              <a:graphic><a:graphicData>
+                <pic:pic xmlns:pic="http://schemas.openxmlformats.org/drawingml/2006/picture">
+                  <pic:blipFill><a:blip r:embed="rId2"/></pic:blipFill>
+                  <pic:spPr><a:xfrm><a:ext cx="5486400" cy="2743200"/></a:xfrm></pic:spPr>
+                </pic:pic>
+              </a:graphicData></a:graphic>
+            </wp:anchor>
+          </w:drawing></w:r>
+        </w:p>
+        <w:p><w:r><w:t>一些描述文字</w:t></w:r></w:p>
+        <w:p>
+          <w:r><w:drawing>
+            <wp:anchor behindDoc="0" distT="0" distB="0" distL="0" distR="0">
+              <wp:positionH relativeFrom="column"><wp:posOffset>1000000</wp:posOffset></wp:positionH>
+              <wp:positionV relativeFrom="paragraph"><wp:posOffset>500000</wp:posOffset></wp:positionV>
+              <wp:extent cx="457200" cy="457200"/>
+              <wp:docPr id="2" name="annotation"/>
+              <a:graphic><a:graphicData>
+                <pic:pic xmlns:pic="http://schemas.openxmlformats.org/drawingml/2006/picture">
+                  <pic:blipFill><a:blip r:embed="rId3"/></pic:blipFill>
+                  <pic:spPr><a:xfrm><a:ext cx="457200" cy="457200"/></a:xfrm></pic:spPr>
+                </pic:pic>
+              </a:graphicData></a:graphic>
+            </wp:anchor>
+          </w:drawing></w:r>
+        </w:p>
+      </w:body>
+    </w:document>"""
+    media = {
+        "word/media/bg.jpeg": _make_jpeg(800, 400),
+        "word/media/fg.png": _make_png(50, 50, (255, 0, 0, 200)),
+    }
+    rels = (
+        '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
+        '<Relationship Id="rId2" '
+        'Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" '
+        'Target="media/bg.jpeg"/>'
+        '<Relationship Id="rId3" '
+        'Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" '
+        'Target="media/fg.png"/></Relationships>'
+    )
+    import tempfile, os
+    with tempfile.TemporaryDirectory() as tmpdir:
+        img_dir = os.path.join(tmpdir, "images")
+        ext = DocxExtractor()
+        result = ext.extract(make_docx(doc, media=media, rels_xml=rels), image_dir=img_dir)
+
+    imgs = [b for b in result.content if isinstance(b, ImageNode)]
+    # 合成后应只有 1 张图片（前景被合并到背景）
+    assert len(imgs) == 1
+    assert imgs[0].metadata.get("composited") is True
+    assert imgs[0].metadata.get("overlay_count") == 1
+    assert imgs[0].anchor_behind_doc is True
+
+
+def test_non_overlapping_images_kept_separate():
+    """不重叠的图片不应被合成。"""
+    # 两张独立的 behindDoc=True 大图
+    doc = f"""<w:document {DOC_NS}>
+      <w:body>
+        <w:p>
+          <w:r><w:drawing>
+            <wp:anchor behindDoc="1" distT="0" distB="0" distL="0" distR="0">
+              <wp:positionH relativeFrom="column"><wp:posOffset>0</wp:posOffset></wp:positionH>
+              <wp:positionV relativeFrom="paragraph"><wp:posOffset>0</wp:posOffset></wp:positionV>
+              <wp:extent cx="5486400" cy="2743200"/>
+              <wp:docPr id="1" name="img1"/>
+              <a:graphic><a:graphicData>
+                <pic:pic xmlns:pic="http://schemas.openxmlformats.org/drawingml/2006/picture">
+                  <pic:blipFill><a:blip r:embed="rId2"/></pic:blipFill>
+                  <pic:spPr><a:xfrm><a:ext cx="5486400" cy="2743200"/></a:xfrm></pic:spPr>
+                </pic:pic>
+              </a:graphicData></a:graphic>
+            </wp:anchor>
+          </w:drawing></w:r>
+        </w:p>
+        <w:p>
+          <w:r><w:drawing>
+            <wp:anchor behindDoc="1" distT="0" distB="0" distL="0" distR="0">
+              <wp:positionH relativeFrom="column"><wp:posOffset>0</wp:posOffset></wp:positionH>
+              <wp:positionV relativeFrom="paragraph"><wp:posOffset>0</wp:posOffset></wp:positionV>
+              <wp:extent cx="5486400" cy="2743200"/>
+              <wp:docPr id="2" name="img2"/>
+              <a:graphic><a:graphicData>
+                <pic:pic xmlns:pic="http://schemas.openxmlformats.org/drawingml/2006/picture">
+                  <pic:blipFill><a:blip r:embed="rId3"/></pic:blipFill>
+                  <pic:spPr><a:xfrm><a:ext cx="5486400" cy="2743200"/></a:xfrm></pic:spPr>
+                </pic:pic>
+              </a:graphicData></a:graphic>
+            </wp:anchor>
+          </w:drawing></w:r>
+        </w:p>
+      </w:body>
+    </w:document>"""
+    media = {
+        "word/media/img1.jpeg": _make_jpeg(800, 400),
+        "word/media/img2.jpeg": _make_jpeg(800, 400),
+    }
+    rels = (
+        '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
+        '<Relationship Id="rId2" '
+        'Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" '
+        'Target="media/img1.jpeg"/>'
+        '<Relationship Id="rId3" '
+        'Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" '
+        'Target="media/img2.jpeg"/></Relationships>'
+    )
+    ext = DocxExtractor()
+    result = ext.extract(make_docx(doc, media=media, rels_xml=rels))
+    imgs = [b for b in result.content if isinstance(b, ImageNode)]
+    assert len(imgs) == 2
+    assert not any(img.metadata.get("composited") for img in imgs)
+
+
+def test_inline_images_not_affected():
+    """内联图片（无 anchor）不应受合成逻辑影响。"""
+    doc = f"""<w:document {DOC_NS}>
+      <w:body>
+        <w:p>
+          <w:r><w:drawing>
+            <wp:inline distT="0" distB="0" distL="0" distR="0">
+              <wp:extent cx="1000000" cy="500000"/>
+              <wp:docPr id="1" name="inline1"/>
+              <a:graphic><a:graphicData>
+                <pic:pic xmlns:pic="http://schemas.openxmlformats.org/drawingml/2006/picture">
+                  <pic:blipFill><a:blip r:embed="rId2"/></pic:blipFill>
+                  <pic:spPr><a:xfrm><a:ext cx="1000000" cy="500000"/></a:xfrm></pic:spPr>
+                </pic:pic>
+              </a:graphicData></a:graphic>
+            </wp:inline>
+          </w:drawing></w:r>
+        </w:p>
+      </w:body>
+    </w:document>"""
+    media = {"word/media/inline.png": _make_png(100, 50)}
+    rels = (
+        '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
+        '<Relationship Id="rId2" '
+        'Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" '
+        'Target="media/inline.png"/></Relationships>'
+    )
+    ext = DocxExtractor()
+    result = ext.extract(make_docx(doc, media=media, rels_xml=rels))
+    imgs = [b for b in result.content if isinstance(b, ImageNode)]
+    assert len(imgs) == 1
+    assert imgs[0].anchor_behind_doc is None
+    assert not imgs[0].metadata.get("composited")

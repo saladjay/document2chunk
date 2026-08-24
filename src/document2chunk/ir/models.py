@@ -123,6 +123,11 @@ class ImageNode(_BlockBase):
     height_emu: Optional[int] = Field(default=None, ge=0)
     alt: Optional[str] = None
     data: Optional[bytes] = None  # 可选二进制；JSON 输出通常 exclude
+    # 锚定定位元数据（用于图片合成）
+    anchor_behind_doc: Optional[bool] = None  # True=behindDoc (背景层)
+    anchor_pos_h_emu: Optional[int] = None  # 水平偏移 EMU
+    anchor_pos_v_emu: Optional[int] = None  # 垂直偏移 EMU（相对段落）
+    anchor_pos_h_rel: Optional[str] = None  # 水平参照 (column/page/margin)
 
 
 class TocNode(_BlockBase):

@@ -474,6 +474,11 @@ class DocumentParser:
                 while drawing is not None and etree.QName(drawing).localname != "drawing":
                     drawing = drawing.getparent()
                 cx = cy = alt = fmt = None
+                # 锚定定位元数据
+                behind_doc: Optional[bool] = None
+                pos_h_emu: Optional[int] = None
+                pos_v_emu: Optional[int] = None
+                pos_h_rel: Optional[str] = None
                 if drawing is not None:
                     ext = drawing.find(f".//{{{WP}}}extent")
                     if ext is not None:
@@ -481,6 +486,28 @@ class DocumentParser:
                     docpr = drawing.find(f".//{{{WP}}}docPr")
                     if docpr is not None:
                         alt = docpr.get("descr") or docpr.get("name")
+                    # 查找 anchor 元素获取定位信息
+                    anchor = drawing.find(f".//{{{WP}}}anchor")
+                    if anchor is not None:
+                        behind_val = anchor.get("behindDoc", "0")
+                        behind_doc = behind_val == "1"
+                        ph = anchor.find(f"{{{WP}}}positionH")
+                        if ph is not None:
+                            pos_h_rel = ph.get("relativeFrom")
+                            off = ph.find(f"{{{WP}}}posOffset")
+                            if off is not None and off.text:
+                                try:
+                                    pos_h_emu = int(off.text)
+                                except ValueError:
+                                    pass
+                        pv = anchor.find(f"{{{WP}}}positionV")
+                        if pv is not None:
+                            off = pv.find(f"{{{WP}}}posOffset")
+                            if off is not None and off.text:
+                                try:
+                                    pos_v_emu = int(off.text)
+                                except ValueError:
+                                    pass
                 if self._reader is not None:
                     media = self._reader.media_for_rel(embed)
                     if media is not None:
@@ -493,6 +520,10 @@ class DocumentParser:
                         width_emu=int(cx) if cx and cx.isdigit() else None,
                         height_emu=int(cy) if cy and cy.isdigit() else None,
                         alt=alt,
+                        anchor_behind_doc=behind_doc,
+                        anchor_pos_h_emu=pos_h_emu,
+                        anchor_pos_v_emu=pos_v_emu,
+                        anchor_pos_h_rel=pos_h_rel,
                     )
                 )
             elif ln == "object":
