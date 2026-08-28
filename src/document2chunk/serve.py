@@ -7,7 +7,8 @@
 
 全类型路由（pdf/docx/图片，按扩展名或魔数）；后处理由各 extractor 内部统一执行
 （designs/009），serve 层不再叠加。result.md 为**全文**（主文 + 附件）。
-例外早退：.md 原件字节直通；.txt 转录（UTF-8 优先 / GB18030 回退 / 剥 BOM）。
+例外早退：.md 解码（UTF-8 优先 / GB18030 回退 / 剥 BOM，失败回退字节直通）、
+.txt 转录（同前），两者都过 text_titles.restore_titles 复原缺失标题后输出。
 """
 from __future__ import annotations
 
@@ -86,8 +87,8 @@ def _is_txt_name(name: Optional[str]) -> bool:
     return bool(name) and Path(name).suffix.lower() == ".txt"
 
 
-def _txt_to_utf8(data: bytes) -> bytes:
-    """txt 转录：UTF-8 优先、GB18030（GBK 超集）回退解码，剥 BOM，统一输出 UTF-8 无 BOM。"""
+def _decode_text(data: bytes) -> Optional[str]:
+    """解码：UTF-8 优先、GB18030（GBK 超集）回退，剥 BOM；失败返回 None。"""
     text = None
     for enc in ("utf-8", "gb18030"):
         try:
@@ -96,10 +97,30 @@ def _txt_to_utf8(data: bytes) -> bytes:
         except UnicodeDecodeError:
             continue
     if text is None:
-        raise UnsupportedFormatError("txt 转录失败：内容既非 UTF-8 也非 GB18030")
-    if text.startswith("\ufeff"):  # 剥离开头 UTF-8 BOM（decode 后残留为首字符）
+        return None
+    if text.startswith("﻿"):  # 剥离开头 UTF-8 BOM（decode 后残留为首字符）
         text = text[1:]
-    return text.encode("utf-8")
+    return text
+
+
+def _restore_text(text: str, name: Optional[str]) -> str:
+    """标题复原（text_titles.restore_titles）；任何异常回退原文，绝不影响解析。"""
+    try:
+        from document2chunk.text_titles import restore_titles
+
+        return restore_titles(text)
+    except Exception as e:  # noqa: BLE001 —— 复原失败回退原文
+        logger.warning("标题复原失败（回退原文）name=%r: %s: %s", name, type(e).__name__, e)
+        return text
+
+
+def _txt_to_utf8(data: bytes) -> bytes:
+    """txt 转录：解码 + 标题复原，统一输出 UTF-8 无 BOM。"""
+    text = _decode_text(data)
+    if text is None:
+        raise UnsupportedFormatError("txt 转录失败：内容既非 UTF-8 也非 GB18030")
+    return _restore_text(text, None).encode("utf-8")
+
 
 
 def _minimal_doc(name: Optional[str]) -> LogicalDocument:
@@ -206,13 +227,15 @@ def parse_to_files(
 
     name = _source_name(source)
     if _is_md_name(name):
-        # .md 直通：不进 extractor/postprocess，原件字节原样写 result.md
+        # .md 早退：解码→标题复原→UTF-8 无 BOM 写 result.md；解码失败回退字节直通
         raw = source if isinstance(source, (bytes, bytearray)) else Path(source).read_bytes()
-        (output_dir / "result.md").write_bytes(raw)
+        text = _decode_text(raw)
+        out = _restore_text(text, name).encode("utf-8") if text is not None else raw
+        (output_dir / "result.md").write_bytes(out)
         return _minimal_doc(name)
 
     if _is_txt_name(name):
-        # .txt 转录：不进 extractor/postprocess，解码规范化为 UTF-8 无 BOM 写 result.md
+        # .txt 转录：解码规范化为 UTF-8 无 BOM + 标题复原，写 result.md
         raw = source if isinstance(source, (bytes, bytearray)) else Path(source).read_bytes()
         (output_dir / "result.md").write_bytes(_txt_to_utf8(raw))
         return _minimal_doc(name)
@@ -249,17 +272,19 @@ def parse_to_zip(
     from document2chunk.api import _route_source_type
 
     if _is_md_name(filename):
-        # .md 直通：不进 extractor/postprocess，原始字节直接打包（不 decode/re-encode）
+        # .md 早退：解码→标题复原→UTF-8 无 BOM 打包；解码失败回退原始字节直通
+        text = _decode_text(data)
+        out = _restore_text(text, filename).encode("utf-8") if text is not None else data
         buf = io.BytesIO()
         with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
-            zf.writestr("result.md", data)
+            zf.writestr("result.md", out)
         zip_bytes = buf.getvalue()
         if save_dir:
             _save_zip_artifacts(save_dir, filename, data, zip_bytes)
         return zip_bytes
 
     if _is_txt_name(filename):
-        # .txt 转录：不进 extractor/postprocess，转 UTF-8 无 BOM 后打包（区别于 .md 的字节直通）
+        # .txt 转录：不进 extractor/postprocess，转 UTF-8 无 BOM + 标题复原后打包
         buf = io.BytesIO()
         with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
             zf.writestr("result.md", _txt_to_utf8(data))

@@ -106,21 +106,46 @@ def test_parse_to_zip_docx_image_refs_match_files():
 
 
 def test_parse_to_zip_md_passthrough():
-    """zip 模式 .md 直通：不解析，zip 恰含 result.md 且为原始字节。"""
+    """zip 模式 .md：已有 # 的内容复原后逐字节不变（无 # 才会重写）。"""
     z = zipfile.ZipFile(io.BytesIO(serve.parse_to_zip(MD_BYTES, "t.md")))
     assert z.namelist() == ["result.md"], z.namelist()
     assert z.read("result.md") == MD_BYTES
 
 
 def test_parse_to_zip_md_uppercase_ext():
-    """大写 .MD 扩展名同样直通（大小写不敏感）。"""
+    """大写 .MD 扩展名同样走 .md 路径（大小写不敏感）。"""
     z = zipfile.ZipFile(io.BytesIO(serve.parse_to_zip(MD_BYTES, "T.MD")))
     assert z.namelist() == ["result.md"], z.namelist()
     assert z.read("result.md") == MD_BYTES
 
 
+def test_parse_to_zip_md_titles_restored():
+    """zip 模式 .md 缺失标题复原：粗体样式行 → ## 标题。"""
+    raw = "**某部关于某事项的通知**\n\n**一、总体要求**\n\n（一）指导思想。以某思想为指导，坚持稳中求进工作总基调，推动高质量发展。\n".encode("utf-8")
+    z = zipfile.ZipFile(io.BytesIO(serve.parse_to_zip(raw, "t.md")))
+    md = z.read("result.md").decode("utf-8")
+    assert "# 某部关于某事项的通知" in md
+    assert "## 一、总体要求" in md
+    assert "### （一）指导思想" in md
+
+
+def test_parse_to_zip_md_undecodable_byte_passthrough():
+    """zip 模式 .md 解码失败：回退字节直通（复原失败不影响输出）。"""
+    raw = b"\xff\xfe\x00bad"
+    z = zipfile.ZipFile(io.BytesIO(serve.parse_to_zip(raw, "t.md")))
+    assert z.read("result.md") == raw
+
+
+def test_parse_to_zip_md_gbk_restored():
+    """zip 模式 GBK 编码 .md：GB18030 回退解码 + 复原，输出 UTF-8。"""
+    raw = "**一、总体要求**\n\n正文内容。\n".encode("gbk")
+    z = zipfile.ZipFile(io.BytesIO(serve.parse_to_zip(raw, "t.md")))
+    md = z.read("result.md").decode("utf-8")
+    assert "## 一、总体要求" in md
+
+
 def test_parse_to_files_md_passthrough(tmp_path):
-    """路径模式 .md 直通：result.md = 原件字节，返回最小文档（content=[]）。"""
+    """路径模式 .md：已有 # 的内容原字节写盘，返回最小文档（content=[]）。"""
     src = tmp_path / "t.md"
     src.write_bytes(MD_BYTES)
     out, imgs = tmp_path / "out", tmp_path / "images"
@@ -169,14 +194,24 @@ def test_parse_to_zip_txt_none_filename_unsupported():
 
 
 def test_parse_to_files_txt_transcoded(tmp_path):
-    """路径模式 .txt：GBK 转码写盘 result.md，返回最小文档（content=[]）。"""
+    """路径模式 .txt：GBK 转码 + 复原写盘 result.md，返回最小文档（content=[]）。"""
     src = tmp_path / "t.txt"
-    src.write_bytes("测试中文内容".encode("gbk"))
+    src.write_bytes("**一、总体要求**\n\n测试中文内容。\n".encode("gbk"))
     out, imgs = tmp_path / "out", tmp_path / "images"
     doc = serve.parse_to_files(str(src), str(out), str(imgs))
-    assert (out / "result.md").read_bytes() == "测试中文内容".encode("utf-8")
+    md = (out / "result.md").read_text(encoding="utf-8")
+    assert "## 一、总体要求" in md
+    assert "测试中文内容" in md
     assert doc.content == []
     assert doc.metadata.source_file == "t.txt"
+
+
+def test_parse_to_zip_txt_titles_restored():
+    """zip 模式 .txt 复原：独立短样式行 → ## 标题。"""
+    raw = "某文件标题已印发。\n\n一、发展现状与形势\n\n取得了一批成果。\n".encode("utf-8")
+    z = zipfile.ZipFile(io.BytesIO(serve.parse_to_zip(raw, "t.txt")))
+    md = z.read("result.md").decode("utf-8")
+    assert "## 一、发展现状与形势" in md
 
 
 def test_parse_to_zip_md_none_filename_unsupported():
