@@ -7,11 +7,15 @@ import）。识别只看内容不看文件名——错标件自动归位。任�
 """
 from __future__ import annotations
 
+import binascii
 import io
+import logging
 import zipfile
 from dataclasses import dataclass
 from enum import Enum
 from typing import Optional
+
+logger = logging.getLogger(__name__)
 
 
 class FileKind(str, Enum):
@@ -95,7 +99,7 @@ def _detect_by_ole2(data: bytes) -> Optional[FileKind]:
     return FileKind.WPS  # Kingsoft 变体：流名非标准 → 尽力按 wps 转 docx
 
 
-def identify(data: bytes) -> Detection:
+def _rules_identify(data: bytes) -> Detection:
     """纯规则层识别。数据不足/乱字节 → UNKNOWN，绝不抛异常。"""
     data = bytes(data or b"")
     if data[:5] == b"%PDF-":
@@ -111,3 +115,51 @@ def identify(data: bytes) -> Detection:
     if ok is not None:
         return Detection(ok, _KIND_EXT[ok], "rules")
     return Detection(FileKind.UNKNOWN, "", "rules")
+
+
+_MAGIKA_OBJ = None  # 模型实例缓存（进程级，避免每次 5ms 加载）
+
+
+def _magika_label(data: bytes) -> Optional[str]:
+    """magika label；未安装/失败返回 None（绝不上抛）。惰性 import 纪律见模块 docstring。"""
+    global _MAGIKA_OBJ
+    try:
+        if _MAGIKA_OBJ is None:
+            import magika  # 顶层禁止 import（onnxruntime 40MB）
+            _MAGIKA_OBJ = magika.Magika()
+        return _MAGIKA_OBJ.identify_bytes(data).output.label  # 如 "wps"/"unknown"
+    except Exception as e:  # noqa: BLE001
+        logger.warning("magika 识别失败（跳过兜底）: %s: %s", type(e).__name__, e)
+        return None
+
+
+# magika label → FileKind（只列我们关心的；未知 label 忽略）
+_MAGIKA_LABEL_KIND = {
+    "doc": FileKind.DOC, "xls": FileKind.XLS, "ppt": FileKind.PPT,
+    "docx": FileKind.DOCX, "xlsx": FileKind.XLSX, "pptx": FileKind.PPTX,
+    "pdf": FileKind.PDF, "rtf": FileKind.RTF, "wps": FileKind.WPS,
+}
+
+
+def identify(data: bytes, use_magika: bool = True) -> Detection:
+    """规则层优先；未命中且 use_magika → magika 兜底；都不中 → UNKNOWN。"""
+    d = _rules_identify(data)
+    if d.kind is not FileKind.UNKNOWN or not use_magika:
+        return d
+    label = _magika_label(bytes(data or b""))
+    kind = _MAGIKA_LABEL_KIND.get(label or "")
+    if kind is not None:
+        return Detection(kind, _KIND_EXT.get(kind, ""), "magika")
+    return Detection(FileKind.UNKNOWN, "", "none")
+
+
+def diagnose(data: bytes, name: Optional[str] = None) -> str:
+    """报错诊断串：文件名 + 魔数前 16 字节 hex + 两层识别意见。"""
+    data = bytes(data or b"")
+    head = binascii.hexlify(data[:16], "-").decode("ascii") or "(空)"
+    d = identify(data)
+    return (
+        f"文件: {name or '(未命名)'}; 魔数: {head}; "
+        f"规则层: {'未命中' if d.layer != 'rules' else d.kind.value}; "
+        f"magika: {'未启用/未安装' if d.layer != 'magika' else d.kind.value}"
+    )

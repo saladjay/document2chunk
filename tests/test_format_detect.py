@@ -67,3 +67,54 @@ def test_detection_ext_mapping():
     assert identify(PDF_BYTES).ext == ".pdf"
     assert identify(_minimal_zip(["word/document.xml"])).ext == ".docx"
     assert identify(RTF_BYTES).ext == ".rtf"
+
+
+# tests/test_format_detect.py 追加
+import sys
+from unittest.mock import MagicMock
+
+import document2chunk.format_detect as fd
+
+
+def test_magika_fallback_adopted(monkeypatch):
+    """规则层未命中 → magika label 非 unknown/zip → 采纳为 kind。"""
+    monkeypatch.setattr(fd, "_MAGIKA_OBJ", None)  # 重置模型缓存（防测试间泄漏）
+    fake = MagicMock()
+    fake.Magika.return_value.identify_bytes.return_value.output.label = "wps"
+    monkeypatch.setitem(sys.modules, "magika", fake)
+    d = fd.identify(RANDOM_BYTES)
+    assert d.kind == FileKind.WPS
+    assert d.layer == "magika"
+
+
+def test_magika_unknown_abstains(monkeypatch):
+    monkeypatch.setattr(fd, "_MAGIKA_OBJ", None)
+    fake = MagicMock()
+    fake.Magika.return_value.identify_bytes.return_value.output.label = "unknown"
+    monkeypatch.setitem(sys.modules, "magika", fake)
+    assert fd.identify(RANDOM_BYTES).layer == "none"
+
+
+def test_magika_import_error_graceful(monkeypatch):
+    """未安装 magika → 规则层结果原样返回，不抛。"""
+    monkeypatch.setattr(fd, "_MAGIKA_OBJ", None)
+    monkeypatch.setitem(sys.modules, "magika", None)  # import 触发 ImportError
+    assert fd.identify(PDF_BYTES).kind == FileKind.PDF
+    assert fd.identify(RANDOM_BYTES).layer == "none"
+
+
+def test_diagnose_message_contains_name_and_hex():
+    msg = fd.diagnose(RANDOM_BYTES, "报告.docx")
+    assert "报告.docx" in msg
+    assert "00-01-02" in msg  # 魔数前字节 hex
+
+
+def test_magika_model_cached(monkeypatch):
+    """Magika 实例只构建一次（模型 5ms/次，缓存避免重复加载）。"""
+    fake = MagicMock()
+    fake.Magika.return_value.identify_bytes.return_value.output.label = "unknown"
+    monkeypatch.setitem(sys.modules, "magika", fake)
+    monkeypatch.setattr(fd, "_MAGIKA_OBJ", None)  # 重置缓存
+    fd.identify(RANDOM_BYTES)
+    fd.identify(RANDOM_BYTES)
+    assert fake.Magika.call_count == 1
