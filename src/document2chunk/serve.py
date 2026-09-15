@@ -23,8 +23,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Optional, Union
 
-from document2chunk.api import _assemble, _source_name
-from document2chunk.exceptions import UnsupportedFormatError
+from document2chunk.api import _assemble
+from document2chunk.exceptions import Document2ChunkError, UnsupportedFormatError
 from document2chunk.ir import (
     DocumentMetadata,
     ImageNode,
@@ -120,6 +120,101 @@ def _txt_to_utf8(data: bytes) -> bytes:
     if text is None:
         raise UnsupportedFormatError("txt 转录失败：内容既非 UTF-8 也非 GB18030")
     return _restore_text(text, None).encode("utf-8")
+
+
+# ---- 老格式归一化（spec docs/superpowers/specs/2026-09-01-legacy-format-support） ----
+_LEGACY_EXTS = {".doc", ".rtf", ".wps", ".ppt", ".pptx"}  # 后缀即进转换分支
+_SPREADSHEET_EXTS = {".xls", ".xlsx", ".xlsm", ".et"}  # 表格：二期，明确 400
+# 打开·解包期异常（UnsupportedFormat/InvalidDocx/InvalidSource 都是 Document2ChunkError
+# 子类）；BadZipFile 是 DocxExtractor 解包非 zip 输入（错标 .docx 实为 OLE2）抛的裸异常
+_FORMAT_EXC_TYPES = (Document2ChunkError, zipfile.BadZipFile)
+
+
+# 转换的间接引用点（测试 mock 用；包一层避免 monkeypatch 打不到惰性 import）
+def _legacy_convert(data, in_ext, target, name=None):
+    from document2chunk import legacy_convert
+    logger.info("老格式归一化: %s %s→%s", name or "(未命名)", in_ext, target)
+    return legacy_convert.convert(data, in_ext, target)
+
+
+def _doc_target_ext() -> str:
+    t = os.environ.get("DOCUMENT2CHUNK_DOC_TARGET", "docx").strip().lower()
+    return ".pdf" if t == "pdf" else ".docx"
+
+
+def _xls_err(name: Optional[str], kind: str) -> UnsupportedFormatError:
+    return UnsupportedFormatError(
+        f"检测到表格格式（{kind}）：{name or '(未命名)'}——即将支持；"
+        "请先导出为 PDF/docx 后上传"
+    )
+
+
+def _zip_container_ext(data: bytes) -> Optional[str]:
+    """zip 容器内部类型 → 规范扩展名（反向错标归位用）；非 zip/纯 zip → None。"""
+    from document2chunk.format_detect import FileKind, identify
+
+    kind = identify(data).kind
+    return {FileKind.DOCX: ".docx", FileKind.PPTX: ".pptx", FileKind.XLSX: ".xlsx"}.get(kind)
+
+
+def _normalize_legacy(data: bytes, name: Optional[str], *, exc_prefix: str = "") -> tuple[bytes, str]:
+    """指纹识别 → 归一化。返回 (产物 bytes, 归位后的规范名)。
+
+    - XLS/XLSX → 400 即将支持
+    - UNKNOWN → 400 + 诊断（exc_prefix 非空时拼原异常前缀）
+    - DOC/RTF/WPS → 转换为 _doc_target_ext()；PPT/PPTX → 转换为 .pdf
+    - ZIP 容器（反向错标：docx 改名 .doc）→ 按内部条目改名归位，不转换
+    - PDF/DOCX/IMAGE 可解析 kind → 原样返回（按识别扩展名归位名）
+    """
+    from document2chunk.format_detect import FileKind, diagnose, identify
+
+    d = identify(data)
+    kind = d.kind
+    if kind in (FileKind.XLS, FileKind.XLSX):
+        raise _xls_err(name, kind.value)
+    if kind is FileKind.UNKNOWN:
+        head = f"{exc_prefix}——" if exc_prefix else ""
+        raise UnsupportedFormatError(f"{head}无法识别的文件格式——{diagnose(data, name)}")
+    if kind in (FileKind.PPT, FileKind.PPTX):
+        target = ".pdf"
+    elif kind in (FileKind.DOC, FileKind.RTF, FileKind.WPS):
+        target = _doc_target_ext()
+    elif kind is FileKind.ZIP:
+        inner = _zip_container_ext(data)
+        if inner is None:  # 纯 zip：无解析路径，给明确报错
+            raise UnsupportedFormatError(
+                f"检测到普通 zip 压缩包：{name or '(未命名)'}——请解压后上传其中的文档"
+            )
+        return data, (Path(name or "f").stem + inner)  # 反向错标：改名归位不转换
+    else:  # PDF / DOCX / IMAGE：内容可解析，原异常另有原因——原样返回
+        return data, name or (f"input{d.ext}" if d.ext else "input.bin")
+    product = _legacy_convert(data, d.ext, target, name)
+    return product, (Path(name or "f").stem + target)
+
+
+def _needs_legacy(name: Optional[str]) -> bool:
+    """后缀决策：True=老格式直转分支；另有表格后缀在此抛 400。"""
+    suffix = Path(name).suffix.lower() if name else ""
+    if suffix in _SPREADSHEET_EXTS:
+        raise _xls_err(name, suffix.lstrip("."))
+    return suffix in _LEGACY_EXTS
+
+
+def _prepare(source, name_hint: Optional[str]) -> tuple[object, Optional[str]]:
+    """统一入口：后缀快路径 + 老格式直转。返回 (新source, 新name)。
+
+    bytes/路径两模式共用同一决策（先取 bytes 再识别）；现代格式原样返回零扰动。
+    """
+    if isinstance(source, (bytes, bytearray)):
+        name, data = name_hint, bytes(source)
+        if _needs_legacy(name):
+            return _normalize_legacy(data, name)
+        return source, name
+    p = Path(source)
+    name = name_hint or p.name
+    if not _needs_legacy(name):
+        return source, name
+    return _normalize_legacy(p.read_bytes(), name)
 
 
 
@@ -225,7 +320,8 @@ def parse_to_files(
     output_dir.mkdir(parents=True, exist_ok=True)
     image_dir.mkdir(parents=True, exist_ok=True)
 
-    name = _source_name(source)
+    source, name = _prepare(source, None)
+
     if _is_md_name(name):
         # .md 早退：解码→标题复原→UTF-8 无 BOM 写 result.md；解码失败回退字节直通
         raw = source if isinstance(source, (bytes, bytearray)) else Path(source).read_bytes()
@@ -240,20 +336,30 @@ def parse_to_files(
         (output_dir / "result.md").write_bytes(_txt_to_utf8(raw))
         return _minimal_doc(name)
 
-    st = _route_source_type(source, source_type)
-    result, geo = _extract_with_images(source, st, str(image_dir))
-    doc = _assemble(result, False)
+    def _run(src) -> LogicalDocument:
+        # 主/兜底共用的组装段（提取避免复制）：路由→提取→组装→元数据→写盘
+        st = _route_source_type(src, source_type)
+        result, geo = _extract_with_images(src, st, str(image_dir))
+        doc = _assemble(result, False)
 
-    if doc.metadata.source_file is None and name:
-        doc.metadata.source_file = name
-    if doc.metadata.source_type is None:
-        doc.metadata.source_type = st
+        if doc.metadata.source_file is None and name:
+            doc.metadata.source_file = name
+        if doc.metadata.source_type is None:
+            doc.metadata.source_type = st
 
-    if demote:
-        _apply_demote(doc)
-    _prefix_image_ids(doc, image_dir.name + "/")
-    (output_dir / "result.md").write_text(_doc_markdown(doc), encoding="utf-8")
-    return doc
+        if demote:
+            _apply_demote(doc)
+        _prefix_image_ids(doc, image_dir.name + "/")
+        (output_dir / "result.md").write_text(_doc_markdown(doc), encoding="utf-8")
+        return doc
+
+    try:
+        return _run(source)
+    except _FORMAT_EXC_TYPES as exc:
+        # 指纹兜底：打开/解包期失败 → 按内容识别归一化（转换/归位/400）后重跑
+        raw = source if isinstance(source, (bytes, bytearray)) else Path(source).read_bytes()
+        source, name = _normalize_legacy(raw, name, exc_prefix=str(exc))
+        return _run(source)
 
 
 def parse_to_zip(
@@ -268,58 +374,73 @@ def parse_to_zip(
     """zip 模式：解析 data，返回 zip 字节流（根目录 result.md + images/）。
 
     save_dir 非空时落盘留痕（request.bin + response.zip + 解包产物），失败仅告警。
+    老格式（.doc/.rtf/... 后缀直转，或解析失败后指纹兜底）先归一化为 docx/pdf。
     """
     from document2chunk.api import _route_source_type
 
-    if _is_md_name(filename):
+    source, name = _prepare(data, filename)
+
+    if _is_md_name(name):
         # .md 早退：解码→标题复原→UTF-8 无 BOM 打包；解码失败回退原始字节直通
-        text = _decode_text(data)
-        out = _restore_text(text, filename).encode("utf-8") if text is not None else data
+        text = _decode_text(source)
+        out = _restore_text(text, name).encode("utf-8") if text is not None else source
         buf = io.BytesIO()
         with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
             zf.writestr("result.md", out)
         zip_bytes = buf.getvalue()
         if save_dir:
-            _save_zip_artifacts(save_dir, filename, data, zip_bytes)
+            _save_zip_artifacts(save_dir, name, data, zip_bytes)
         return zip_bytes
 
-    if _is_txt_name(filename):
+    if _is_txt_name(name):
         # .txt 转录：不进 extractor/postprocess，转 UTF-8 无 BOM + 标题复原后打包
         buf = io.BytesIO()
         with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
-            zf.writestr("result.md", _txt_to_utf8(data))
+            zf.writestr("result.md", _txt_to_utf8(source))
         zip_bytes = buf.getvalue()
         if save_dir:
-            _save_zip_artifacts(save_dir, filename, data, zip_bytes)
+            _save_zip_artifacts(save_dir, name, data, zip_bytes)
         return zip_bytes
 
     tmp = Path(tempfile.mkdtemp(prefix="d2c_zip_"))
     try:
         image_dir = tmp / image_dir_name
-        st = _route_source_type(data, source_type)
-        result, geo = _extract_with_images(data, st, str(image_dir))
-        doc = _assemble(result, False)
-        if filename and doc.metadata.source_file is None:
-            doc.metadata.source_file = filename
-        if doc.metadata.source_type is None:
-            doc.metadata.source_type = st
-        if demote:
-            _apply_demote(doc)
-        _prefix_image_ids(doc, image_dir_name + "/")
-        md = _doc_markdown(doc)
 
-        buf = io.BytesIO()
-        with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
-            zf.writestr("result.md", md)
-            if image_dir.exists():
-                for img in sorted(image_dir.rglob("*")):
-                    if img.is_file():
-                        arc = img.relative_to(tmp).as_posix()  # images/xxx.png
-                        zf.write(img, arc)
-        zip_bytes = buf.getvalue()
-        if save_dir:
-            _save_zip_artifacts(save_dir, filename, data, zip_bytes)
-        return zip_bytes
+        def _run(src) -> bytes:
+            # 主/兜底共用的组装打包段（提取避免复制）：路由→提取→组装→元数据→打包
+            st = _route_source_type(src, source_type)
+            result, geo = _extract_with_images(src, st, str(image_dir))
+            doc = _assemble(result, False)
+            if name and doc.metadata.source_file is None:
+                doc.metadata.source_file = name
+            if doc.metadata.source_type is None:
+                doc.metadata.source_type = st
+            if demote:
+                _apply_demote(doc)
+            _prefix_image_ids(doc, image_dir_name + "/")
+            md = _doc_markdown(doc)
+
+            buf = io.BytesIO()
+            with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+                zf.writestr("result.md", md)
+                if image_dir.exists():
+                    for img in sorted(image_dir.rglob("*")):
+                        if img.is_file():
+                            arc = img.relative_to(tmp).as_posix()  # images/xxx.png
+                            zf.write(img, arc)
+            zip_bytes = buf.getvalue()
+            if save_dir:
+                # 留痕收「请求原件」：request.bin 用收到的原始 data（非转换产物）
+                _save_zip_artifacts(save_dir, name, data, zip_bytes)
+            return zip_bytes
+
+        try:
+            return _run(source)
+        except _FORMAT_EXC_TYPES as exc:
+            # 指纹兜底：打开/解包期失败 → 按内容识别归一化（转换/归位/400）后重跑
+            raw = source if isinstance(source, (bytes, bytearray)) else Path(source).read_bytes()
+            source, name = _normalize_legacy(raw, name, exc_prefix=str(exc))
+            return _run(source)
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
 

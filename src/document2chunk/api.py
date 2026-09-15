@@ -375,6 +375,8 @@ def create_app():
                 raise HTTPException(status_code=400, detail=f"文件不存在: {fp}")
             try:
                 serve.parse_to_files(fp, output_dir, image_dir, demote=demote)
+            except Document2ChunkError:
+                raise  # UnsupportedFormat→400 / MissingDependency→503 / 其他→422（注册的 handler）
             except Exception as exc:  # noqa: BLE001
                 raise HTTPException(status_code=500, detail=f"{type(exc).__name__}: {exc}") from exc
             return {"status": "ok"}
@@ -390,6 +392,8 @@ def create_app():
             zip_bytes = serve.parse_to_zip(
                 data, getattr(upload, "filename", None), demote=demote, save_dir=save_dir
             )
+        except Document2ChunkError:
+            raise  # UnsupportedFormat→400 / MissingDependency→503 / 其他→422（注册的 handler）
         except Exception as exc:  # noqa: BLE001
             raise HTTPException(status_code=500, detail=f"{type(exc).__name__}: {exc}") from exc
         from fastapi.responses import Response
