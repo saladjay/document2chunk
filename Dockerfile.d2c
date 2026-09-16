@@ -5,7 +5,13 @@ FROM python:3.12-slim
 WORKDIR /app
 
 # 系统依赖（PyMuPDF/pdfplumber 需要；LibreOffice 老格式归一化 + 中文字体防豆腐块）
-RUN apt-get update && apt-get install -y --no-install-recommends \
+# APT_MIRROR：112 直连 deb.debian.org 仅 ~20KB/s（LibreOffice 全量要数小时）；
+# compose 传 mirrors.aliyun.com（实测 1.1MB/s），默认空=不动官方源
+ARG APT_MIRROR=""
+RUN if [ -n "$APT_MIRROR" ]; then \
+        sed -i "s|deb.debian.org|${APT_MIRROR}|g" /etc/apt/sources.list.d/debian.sources; \
+    fi \
+    && apt-get update && apt-get install -y --no-install-recommends \
     libglib2.0-0 libsm6 libxrender1 libxext6 libgl1 \
     libreoffice-core libreoffice-writer libreoffice-impress \
     fonts-noto-cjk \
@@ -16,8 +22,9 @@ COPY pyproject.toml ./
 COPY src ./src
 RUN mkdir -p openspec && printf '# document2chunk\n' > openspec/project.md
 
-# 安装（全部 extras：pdf/ocr/docx/api/viz/legacy）
-RUN pip install --no-cache-dir ".[pdf,ocr,docx,api,viz,legacy]"
+# 安装（全部 extras：pdf/ocr/docx/api/viz/legacy）；PIP_INDEX_URL 同理走国内镜像
+ARG PIP_INDEX_URL=https://pypi.org/simple
+RUN pip install --no-cache-dir -i ${PIP_INDEX_URL} ".[pdf,ocr,docx,api,viz,legacy]"
 
 # OCR 服务配置（宿主 PaddleOCR :8000；token 部署时注入）
 # 老格式归一化：doc/ppt 等先经 soffice 转 docx（libreoffice-calc 二期再装）

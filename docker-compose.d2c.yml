@@ -6,6 +6,10 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.d2c
+      # 112 出海带宽极差（deb.debian.org ~20KB/s）——apt/pip 走阿里云镜像（实测 1.1MB/s）
+      args:
+        APT_MIRROR: mirrors.aliyun.com
+        PIP_INDEX_URL: https://mirrors.aliyun.com/pypi/simple
     image: document2chunk:latest
     restart: unless-stopped
     # 容器经 host.docker.internal 访问宿主 PaddleOCR :8000
