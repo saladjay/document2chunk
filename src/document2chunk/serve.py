@@ -149,22 +149,15 @@ def _xls_err(name: Optional[str], kind: str) -> UnsupportedFormatError:
     )
 
 
-def _zip_container_ext(data: bytes) -> Optional[str]:
-    """zip 容器内部类型 → 规范扩展名（反向错标归位用）；非 zip/纯 zip → None。"""
-    from document2chunk.format_detect import FileKind, identify
-
-    kind = identify(data).kind
-    return {FileKind.DOCX: ".docx", FileKind.PPTX: ".pptx", FileKind.XLSX: ".xlsx"}.get(kind)
-
-
 def _normalize_legacy(data: bytes, name: Optional[str], *, exc_prefix: str = "") -> tuple[bytes, str]:
     """指纹识别 → 归一化。返回 (产物 bytes, 归位后的规范名)。
 
     - XLS/XLSX → 400 即将支持
     - UNKNOWN → 400 + 诊断（exc_prefix 非空时拼原异常前缀）
     - DOC/RTF/WPS → 转换为 _doc_target_ext()；PPT/PPTX → 转换为 .pdf
-    - ZIP 容器（反向错标：docx 改名 .doc）→ 按内部条目改名归位，不转换
-    - PDF/DOCX/IMAGE 可解析 kind → 原样返回（按识别扩展名归位名）
+    - 纯 zip → 400 明确报错；zip 家族成员（docx/pptx/xlsx，含反向错标）识别为
+      具体 kind 后走对应分支：DOCX/IMAGE/PDF 可解析 kind → 原样返回不转换
+      （路由层按 PK 嗅探/魔数自行归位）
     """
     from document2chunk.format_detect import FileKind, diagnose, identify
 
@@ -175,17 +168,14 @@ def _normalize_legacy(data: bytes, name: Optional[str], *, exc_prefix: str = "")
     if kind is FileKind.UNKNOWN:
         head = f"{exc_prefix}——" if exc_prefix else ""
         raise UnsupportedFormatError(f"{head}无法识别的文件格式——{diagnose(data, name)}")
+    if kind is FileKind.ZIP:
+        raise UnsupportedFormatError(
+            f"检测到普通 zip 压缩包：{name or '(未命名)'}——请解压后上传其中的文档"
+        )
     if kind in (FileKind.PPT, FileKind.PPTX):
         target = ".pdf"
     elif kind in (FileKind.DOC, FileKind.RTF, FileKind.WPS):
         target = _doc_target_ext()
-    elif kind is FileKind.ZIP:
-        inner = _zip_container_ext(data)
-        if inner is None:  # 纯 zip：无解析路径，给明确报错
-            raise UnsupportedFormatError(
-                f"检测到普通 zip 压缩包：{name or '(未命名)'}——请解压后上传其中的文档"
-            )
-        return data, (Path(name or "f").stem + inner)  # 反向错标：改名归位不转换
     else:  # PDF / DOCX / IMAGE：内容可解析，原异常另有原因——原样返回
         return data, name or (f"input{d.ext}" if d.ext else "input.bin")
     product = _legacy_convert(data, d.ext, target, name)

@@ -1,4 +1,3 @@
-# src/document2chunk/legacy_convert.py
 """legacy_convert —— LibreOffice headless 归一化转换执行器（spec §3.2）。
 
 每次转换独立 -env:UserInstallation profile（headless 全局锁，不隔离并发必死锁）；
@@ -14,7 +13,6 @@ import shutil
 import signal
 import subprocess
 import tempfile
-import uuid
 from pathlib import Path
 from typing import Optional
 

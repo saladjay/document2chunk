@@ -1,4 +1,3 @@
-# src/document2chunk/format_detect.py
 """format_detect —— 内容指纹识别（规则层 + magika 惰性兜底）。
 
 两级串联（spec §2.2）：规则层（魔数/zip 条目名/OLE2 流名/rtf 文本头，µs 级、
@@ -44,7 +43,7 @@ _KIND_EXT = {
     FileKind.WPS: ".wps",
 }
 
-# OLE2 流名 → kind（含 WPS 文字常见流名；未命中流名的 OLE2 → WPS 兜底由 magika 层做）
+# OLE2 流名 → kind（三种标准流名；未命中流名的 OLE2 在 _detect_by_ole2 尾部兜底归 WPS）
 _OLE2_STREAM_KIND = [
     ("WordDocument", FileKind.DOC),
     ("PowerPoint Document", FileKind.PPT),

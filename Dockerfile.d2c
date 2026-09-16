@@ -27,13 +27,14 @@ ARG PIP_INDEX_URL=https://pypi.org/simple
 RUN pip install --no-cache-dir -i ${PIP_INDEX_URL} ".[pdf,ocr,docx,api,viz,legacy]"
 
 # OCR 服务配置（宿主 PaddleOCR :8000；token 部署时注入）
-# 老格式归一化：doc/ppt 等先经 soffice 转 docx（libreoffice-calc 二期再装）
 ENV DOCUMENT2CHUNK_OCR_ENDPOINT=http://host.docker.internal:8000 \
     DOCUMENT2CHUNK_OCR_MODEL=vl \
     DOCUMENT2CHUNK_OCR_TIMEOUT=300 \
-    DOCUMENT2CHUNK_DOC_TARGET=docx \
-    DOCUMENT2CHUNK_SOFFICE_TIMEOUT=120 \
     PYTHONUNBUFFERED=1
+
+# 老格式归一化：doc/rtf/wps 先经 soffice 转 docx（默认；可切 pdf），ppt/pptx 转 pdf
+ENV DOCUMENT2CHUNK_DOC_TARGET=docx \
+    DOCUMENT2CHUNK_SOFFICE_TIMEOUT=120
 
 EXPOSE 8000
 

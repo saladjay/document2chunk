@@ -1,7 +1,7 @@
 # tests/test_serve_legacy.py
 """serve 层老格式接线：后缀快路径、指纹兜底、xls 400、错误带文件名。
 
-soffice/magika 全 mock（不依赖环境）；转换产物用最小 docx（test_docx.make_docx）。
+仅 mock serve._legacy_convert（不依赖 soffice）；转换产物用最小 docx（test_docx.make_docx）。
 """
 
 from __future__ import annotations

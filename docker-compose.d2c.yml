@@ -7,6 +7,7 @@ services:
       context: .
       dockerfile: Dockerfile.d2c
       # 112 出海带宽极差（deb.debian.org ~20KB/s）——apt/pip 走阿里云镜像（实测 1.1MB/s）
+      # 镜像不可用时删除下面两个 args，回退官方源（慢但可用）
       args:
         APT_MIRROR: mirrors.aliyun.com
         PIP_INDEX_URL: https://mirrors.aliyun.com/pypi/simple

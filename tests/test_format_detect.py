@@ -1,4 +1,3 @@
-# tests/test_format_detect.py
 """format_detect 规则层：魔数/zip 条目/OLE2 流名/rtf 全矩阵 + 错标件 + 脏输入。"""
 
 from __future__ import annotations
