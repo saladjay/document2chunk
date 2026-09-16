@@ -31,17 +31,17 @@ class _FakePopen:
         _FakePopen.last = self
 
     def wait(self, timeout=None):
+        return self.returncode
+
+    def communicate(self, timeout=None):
         if self._timeout:
-            self._timeout = False  # 只首次超时：kill 后的收尸 wait 正常返回
+            self._timeout = False  # 只首次超时：kill 后的收尸 communicate 正常返回
             raise subprocess.TimeoutExpired(self.cmd, timeout)
         if self._product is not None:
             out = Path(self.cmd[self.cmd.index("--outdir") + 1])
             target = self.cmd[self.cmd.index("--convert-to") + 1]
             out.mkdir(parents=True, exist_ok=True)
             (out / f"{Path(self.cmd[-1]).stem}.{target}").write_bytes(self._product)
-        return self.returncode
-
-    def communicate(self):
         stderr = b"Error: source format not detected" if self.returncode else b""
         return b"", stderr
 

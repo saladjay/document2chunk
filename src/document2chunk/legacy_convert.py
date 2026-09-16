@@ -70,18 +70,23 @@ def convert(
             cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, start_new_session=True
         )
         try:
-            proc.wait(timeout=timeout)
+            # communicate（非 wait）：等待期持续排空管道，话痨 soffice（>64KB 输出）
+            # 不会因管道满阻塞而把已成功的转换卡成伪超时
+            _out, stderr = proc.communicate(timeout=timeout)
         except subprocess.TimeoutExpired as exc:
             try:
                 os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
             except (ProcessLookupError, PermissionError, AttributeError, OSError):
                 proc.kill()  # 进程组已消失/平台无 killpg → 退回直接杀
-            proc.wait(timeout=10)
+            try:
+                proc.wait(timeout=10)
+                proc.communicate(timeout=10)  # 收尸 + 排空残留，防句柄悬挂
+            except subprocess.TimeoutExpired:
+                pass  # SIGKILL 后仍不退出极罕见；交由 TemporaryDirectory 收尾
             raise TimeoutError(
                 f"LibreOffice 转换超时（{timeout}s，可调 DOCUMENT2CHUNK_SOFFICE_TIMEOUT）"
                 f"，文件 {name or '(未命名)'}，输入格式 {in_ext}"
             ) from exc
-        _out, stderr = proc.communicate()
         rc = proc.returncode
         stderr_tail = (stderr or b"")[-200:].decode("utf-8", errors="replace").strip()
         product = outdir / f"input{target_ext}"
