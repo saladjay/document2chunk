@@ -2,14 +2,16 @@
 """legacy_convert —— LibreOffice headless 归一化转换执行器（spec §3.2）。
 
 每次转换独立 -env:UserInstallation profile（headless 全局锁，不隔离并发必死锁）；
-超时 kill；错误映射：soffice 缺失→MissingDependencyError(503)、超时→TimeoutError(500)、
-产物缺失→LegacyConversionError(422)。消息一律带输入扩展名（即检测出的格式）。
+超时 killpg 杀整棵进程树（soffice→oosplash→soffice.bin）；错误映射：soffice 缺失→
+MissingDependencyError(503)、超时→TimeoutError(500)、转换失败（rc!=0/产物缺失/0 字节）→
+LegacyConversionError(422)。消息带文件名、扩展名、rc 与 stderr 尾巴。
 """
 from __future__ import annotations
 
 import logging
 import os
 import shutil
+import signal
 import subprocess
 import tempfile
 import uuid
@@ -32,11 +34,16 @@ def soffice_available() -> bool:
 
 
 def convert(
-    data: bytes, in_ext: str, target_ext: str, *, timeout: Optional[int] = None
+    data: bytes,
+    in_ext: str,
+    target_ext: str,
+    *,
+    timeout: Optional[int] = None,
+    name: Optional[str] = None,
 ) -> bytes:
-    """转换 bytes：落盘 <uuid><in_ext> → soffice --convert-to <target_ext> → 读回。
+    """转换 bytes：落盘 input<in_ext> → soffice --convert-to <target_ext> → 读回。
 
-    timeout=None 时用 DOCUMENT2CHUNK_SOFFICE_TIMEOUT（默认 120s）。
+    timeout=None 时用 DOCUMENT2CHUNK_SOFFICE_TIMEOUT（默认 120s）；name 仅用于报错定位。
     """
     exe = shutil.which("soffice")
     if exe is None:
@@ -59,18 +66,31 @@ def convert(
             "--convert-to", target_ext.lstrip("."),
             "--outdir", str(outdir), str(src),
         ]
+        # start_new_session：超时按进程组杀树（soffice 脚本→oosplash→soffice.bin，
+        # 只 SIGKILL 直接子进程会留孤儿 soffice.bin 持续烧 CPU/内存）
+        proc = subprocess.Popen(
+            cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, start_new_session=True
+        )
         try:
-            subprocess.run(cmd, timeout=timeout, check=False,
-                           stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            proc.wait(timeout=timeout)
         except subprocess.TimeoutExpired as exc:
+            try:
+                os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+            except (ProcessLookupError, PermissionError, AttributeError, OSError):
+                proc.kill()  # 进程组已消失/平台无 killpg → 退回直接杀
+            proc.wait(timeout=10)
             raise TimeoutError(
                 f"LibreOffice 转换超时（{timeout}s，可调 DOCUMENT2CHUNK_SOFFICE_TIMEOUT）"
-                f"，输入格式 {in_ext}"
+                f"，文件 {name or '(未命名)'}，输入格式 {in_ext}"
             ) from exc
+        _out, stderr = proc.communicate()
+        rc = proc.returncode
+        stderr_tail = (stderr or b"")[-200:].decode("utf-8", errors="replace").strip()
         product = outdir / f"input{target_ext}"
-        if not product.exists() or product.stat().st_size == 0:
+        if rc != 0 or not product.exists() or product.stat().st_size == 0:
             raise LegacyConversionError(
-                f"LibreOffice 无法转换该文件（输入格式 {in_ext} → {target_ext}）"
+                f"LibreOffice 无法转换：{name or '(未命名)'}"
+                f"（{in_ext} → {target_ext}，rc={rc}）：{stderr_tail}"
             )
         return product.read_bytes()
 

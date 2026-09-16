@@ -134,7 +134,7 @@ _FORMAT_EXC_TYPES = (Document2ChunkError, zipfile.BadZipFile)
 def _legacy_convert(data, in_ext, target, name=None):
     from document2chunk import legacy_convert
     logger.info("老格式归一化: %s %s→%s", name or "(未命名)", in_ext, target)
-    return legacy_convert.convert(data, in_ext, target)
+    return legacy_convert.convert(data, in_ext, target, name=name)
 
 
 def _doc_target_ext() -> str:
