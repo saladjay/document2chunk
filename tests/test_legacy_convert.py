@@ -85,3 +85,14 @@ def test_convert_real_soffice(tmp_path):
     rtf = rb"{\rtf1\ansi Real integration test document.\par}"
     got = lc.convert(rtf, ".rtf", ".docx", timeout=60)
     assert got[:2] == b"PK"  # docx 是 zip 容器
+
+
+def test_container_env_complete():
+    """容器内 legacy extra 与 soffice 双就绪；裸机无环境跳过。"""
+    try:
+        import magika  # noqa: F401
+        import olefile  # noqa: F401
+    except ImportError:
+        pytest.skip("legacy extra 未安装")
+    if not lc.soffice_available():
+        pytest.skip("soffice 未安装")
