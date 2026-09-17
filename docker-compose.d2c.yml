@@ -26,6 +26,7 @@ services:
       - "9301:8000"   # 对外 9301（9300 被 mineru2doc 占用）
     volumes:
       - ./d2c_outputs:/app/outputs   # 留痕目录挂载（留痕关闭时空置；已存文件可继续查看）
+      - ./d2c_logs:/app/logs         # timing JSONL（timing-YYYYMMDD.jsonl 按天滚动）
     deploy:
       resources:
         limits:
