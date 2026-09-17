@@ -230,15 +230,23 @@ def set_pdf_kind_detector(fn: Optional[Callable[[Source], SourceType]]) -> None:
 
 
 def _pdf_kind(source: Source) -> SourceType:
-    """区分 editable PDF（→pdf-extractor）/ scanned·mixed（→ocr-extractor）。"""
+    """区分 editable PDF（→pdf-extractor）/ scanned·mixed（→ocr-extractor）。
+
+    毒 PDF 看门狗：detect 是已知 MuPDF 楔死点（killer.pdf），默认子进程执行+超时终止
+    （env DOCUMENT2CHUNK_DETECT_TIMEOUT，默认 120s，0=退回进程内直调）。
+    """
     if _PDF_KIND_DETECTOR is not None:
         return _PDF_KIND_DETECTOR(source)
     try:
-        from document2chunk.pipeline.pdf_detect import detect_pdf_type  # type: ignore
+        from document2chunk.pipeline import pdf_detect as _pd
     except ImportError:
-        detect_pdf_type = None
-    if detect_pdf_type is not None:
-        res = detect_pdf_type(source)  # DetectResult 或字符串
+        _pd = None
+    if _pd is not None:
+        timeout = float(os.environ.get("DOCUMENT2CHUNK_DETECT_TIMEOUT", "120") or "0")
+        if timeout > 0 and hasattr(_pd, "detect_pdf_type_guarded"):
+            res = _pd.detect_pdf_type_guarded(source, timeout)
+        else:
+            res = _pd.detect_pdf_type(source)
         kind = getattr(res, "pdf_type", res)  # 'editable' | 'scanned' | 'mixed'
         return SourceType.OCR if kind in ("scanned", "mixed") else SourceType.PDF
     return _pdf_kind_heuristic(source)

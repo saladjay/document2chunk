@@ -177,12 +177,19 @@ def test_red_serve_detect_runs_once(monkeypatch, tmp_path):
     from document2chunk import serve
 
     real = detect_mod.detect_pdf_type
+    real_g = detect_mod.detect_pdf_type_guarded
     calls: list = []
 
     def counting(source, pages=None):
         calls.append(1)
         return real(source, pages=pages)
 
+    def counting_g(source, timeout_s):
+        calls.append(1)
+        return real_g(source, timeout_s)
+
+    # 路由层默认走 guarded(毒 PDF 看门狗);提取器侧理论上不再直调
+    monkeypatch.setattr(detect_mod, "detect_pdf_type_guarded", counting_g)
     monkeypatch.setattr(detect_mod, "detect_pdf_type", counting)
     monkeypatch.setattr(pdf_mod, "detect_pdf_type", counting)
     # 复位可能被其他用例注入的判定器（test_api 会 set_pdf_kind_detector 且不还原），

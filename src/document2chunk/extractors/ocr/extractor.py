@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import time
 from pathlib import Path
 from typing import Optional
@@ -82,13 +83,49 @@ class OcrExtractor:
         blocks = []
         page_geometry: dict = {}
 
-        for page_index, media, fname, pw, ph in iter_pages(data, source_file or "source"):
-            page_geometry[page_index] = (pw, ph)
-            _t0 = time.perf_counter()
+        pages = list(iter_pages(data, source_file or "source"))
+
+        # ---- fetch 阶段（有界并发）：只做 HTTP。worker 不碰 ContextVar（计时器），
+        # 耗时在 worker 测好随结果返回；映射/发 id/计时统一在下方按页序串行，
+        # 保证与串行版输出逐字节一致（docs/大文件提效调研.md §7 序3 等价前提）。
+        results: dict = {}   # page_index -> (resp, elapsed_s)
+        errors: list = []    # [(page_index, exc)]
+        partial = self._cfg.partial_ok
+        conc = max(1, int(self._cfg.concurrency))
+
+        def _fetch(args):
+            idx, media, fname = args
+            t0 = time.perf_counter()
             resp = self._client.parse(media, fname, model=model)
+            return resp, time.perf_counter() - t0
+
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+
+        fetch_args = [(idx, media, fname) for idx, media, fname, _pw, _ph in pages]
+        with ThreadPoolExecutor(max_workers=min(conc, len(fetch_args) or 1)) as ex:
+            futs = {ex.submit(_fetch, a): a[0] for a in fetch_args}
+            for fut in as_completed(futs):
+                idx = futs[fut]
+                try:
+                    results[idx] = fut.result()
+                except Exception as exc:  # noqa: BLE001 —— 与串行版一致：任何异常都终止/记录
+                    errors.append((idx, exc))
+                    if not partial:
+                        for f in futs:
+                            f.cancel()  # 已在跑的随 per-request 超时自然结束
+        if errors and not partial:
+            errors.sort(key=lambda x: x[0])  # 取最小页号的错误，贴近串行语义
+            raise errors[0][1]
+
+        # ---- 映射阶段（按页序串行，原路径不动） ----
+        for page_index, media, fname, pw, ph in pages:
+            page_geometry[page_index] = (pw, ph)
+            if partial and page_index in {e[0] for e in errors}:
+                continue
+            resp, _elapsed = results[page_index]
             _timer = timing.get_current_timer()
             if _timer is not None:
-                _timer.ocr_page(page_index + 1, time.perf_counter() - _t0, pcount)
+                _timer.ocr_page(page_index + 1, _elapsed, pcount)
             if dump_dir:
                 _dump_response(dump_dir, page_index, resp)
             lp_list = resp.get("layoutParsingResults") or []
@@ -125,6 +162,12 @@ class OcrExtractor:
             page_count=pcount,
             generator="paddleocr-service",
         )
+        if partial and errors:
+            failed = sorted(e[0] for e in errors)
+            metadata.custom["ocr"] = {"failed_pages": [i + 1 for i in failed]}
+            logging.getLogger(__name__).warning(
+                "OCR partial 模式：%d 页失败已跳过(1基页号)=%s", len(failed), [i + 1 for i in failed]
+            )
         # 全文档后处理（两路共用：噪声过滤 + 跨页合并 + 标题定级 + 附件拆分，designs/009）
         pp_log: list = []
         main_content, attach_segments = postprocess(

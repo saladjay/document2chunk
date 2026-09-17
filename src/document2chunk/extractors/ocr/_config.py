@@ -62,6 +62,8 @@ class OcrConfig:
     timeout: float = 180.0
     max_retries: int = 3
     min_confidence: float = 0.3  # 低于此置信度的块被过滤（0=不过滤）
+    concurrency: int = 4        # 页级 fetch 并发（1=串行；映射/发 id 始终按页序串行）
+    partial_ok: bool = False    # True=单页失败跳过并记录 failed_pages；False=全有全无（原契约）
 
     @classmethod
     def from_env(cls) -> "OcrConfig":
@@ -73,6 +75,8 @@ class OcrConfig:
             timeout=float(_env("DOCUMENT2CHUNK_OCR_TIMEOUT", "180")),
             max_retries=int(_env("DOCUMENT2CHUNK_OCR_MAX_RETRIES", "3")),
             min_confidence=float(_env("DOCUMENT2CHUNK_OCR_MIN_CONFIDENCE", "0.3")),
+            concurrency=max(1, int(_env("DOCUMENT2CHUNK_OCR_CONCURRENCY", "4"))),
+            partial_ok=_env("DOCUMENT2CHUNK_OCR_PARTIAL", "0").strip().lower() in ("1", "true", "yes"),
         )
 
 
