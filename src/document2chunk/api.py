@@ -26,6 +26,7 @@ from document2chunk.exceptions import (
     UnsupportedFormatError,
 )
 from document2chunk.ir import ExtractionResult, LogicalDocument, SourceType
+from document2chunk.timing import StageTimer, log_arrive
 
 log = logging.getLogger(__name__)
 
@@ -351,7 +352,8 @@ def create_app():
     async def _chai_parse(request: Request):
         """Chai 对接契约（/parse 与 /parse-pdf 共用，与 mineru2doc :9300/parse 一致）：
         路径模式(file_path/output_dir/image_dir)→写 result.md+images，返回 {status:ok}；
-        zip 模式(文件二进制)→返回 zip 流(result.md+images/)。可选 demote。"""
+        zip 模式(文件二进制)→返回 zip 流(result.md+images/)。可选 demote。
+        可观测性：ARRIVE 行（文件名/大小/来源IP）+ StageTimer 全程计时。"""
         from document2chunk import serve
 
         ctype = request.headers.get("content-type", "")
@@ -364,6 +366,7 @@ def create_app():
 
         demote = str(form.get("demote", "")).lower() == "true"
         file_path = form.get("file_path")
+        from_ip = request.client.host if request.client else None
 
         if file_path:  # 路径模式
             output_dir = form.get("output_dir")
@@ -371,13 +374,27 @@ def create_app():
             if not output_dir or not image_dir:
                 raise HTTPException(status_code=400, detail="路径模式需 file_path + output_dir + image_dir")
             fp = str(file_path)
+            try:
+                size_bytes = os.path.getsize(fp)
+            except OSError:
+                size_bytes = None
+            timer = StageTimer(
+                file=os.path.basename(fp), size_bytes=size_bytes, mode="path", demote=demote
+            )
+            log_arrive(
+                request_id=timer.request_id, file=timer.file,
+                size_bytes=size_bytes, mode="path", from_ip=from_ip,
+            )
             if not os.path.exists(fp):
+                timer.finish("error", error_type="FileMissing")
                 raise HTTPException(status_code=400, detail=f"文件不存在: {fp}")
             try:
-                serve.parse_to_files(fp, output_dir, image_dir, demote=demote)
-            except Document2ChunkError:
+                serve.parse_to_files(fp, output_dir, image_dir, demote=demote, timer=timer)
+            except Document2ChunkError as exc:
+                timer.finish("error", error_type=type(exc).__name__)  # 幂等，serve 已 finish 则 no-op
                 raise  # UnsupportedFormat→400 / MissingDependency→503 / 其他→422（注册的 handler）
             except Exception as exc:  # noqa: BLE001
+                timer.finish("error", error_type=type(exc).__name__)  # 幂等，serve 已 finish 则 no-op
                 raise HTTPException(status_code=500, detail=f"{type(exc).__name__}: {exc}") from exc
             return {"status": "ok"}
 
@@ -386,15 +403,23 @@ def create_app():
         if upload is None:
             raise HTTPException(status_code=400, detail="zip 模式缺少 file 字段")
         data = await upload.read()
+        filename = getattr(upload, "filename", None)
+        timer = StageTimer(file=filename, size_bytes=len(data), mode="zip", demote=demote)
+        log_arrive(
+            request_id=timer.request_id, file=filename,
+            size_bytes=len(data), mode="zip", from_ip=from_ip,
+        )
         # 输出落盘留痕（线上排查用）：DOCUMENT2CHUNK_SAVE_OUTPUT_DIR 未设置则 None、零行为变化
         save_dir = os.environ.get("DOCUMENT2CHUNK_SAVE_OUTPUT_DIR") or None
         try:
             zip_bytes = serve.parse_to_zip(
-                data, getattr(upload, "filename", None), demote=demote, save_dir=save_dir
+                data, filename, demote=demote, save_dir=save_dir, timer=timer
             )
-        except Document2ChunkError:
+        except Document2ChunkError as exc:
+            timer.finish("error", error_type=type(exc).__name__)  # 幂等，serve 已 finish 则 no-op
             raise  # UnsupportedFormat→400 / MissingDependency→503 / 其他→422（注册的 handler）
         except Exception as exc:  # noqa: BLE001
+            timer.finish("error", error_type=type(exc).__name__)  # 幂等，serve 已 finish 则 no-op
             raise HTTPException(status_code=500, detail=f"{type(exc).__name__}: {exc}") from exc
         from fastapi.responses import Response
         return Response(content=zip_bytes, media_type="application/zip")
