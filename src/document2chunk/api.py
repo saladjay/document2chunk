@@ -521,6 +521,11 @@ def main(argv: Optional[list] = None) -> int:
 
     import uvicorn
 
+    # uvicorn 默认 log_config 只配 uvicorn.*，不给 root logger 装 handler——
+    # 不先 basicConfig 的话 document2chunk.timing 的 INFO 行（ARRIVE/ocr_page/DONE）
+    # 会被 Python lastResort 丢弃（只透出 WARNING+）。uvicorn 随后的 dictConfig
+    # 带 disable_existing_loggers=False，不会拆掉这里装上的 root handler。
+    logging.basicConfig(level=logging.INFO)
     uvicorn.run(create_app(), host=args.host, port=args.port)
     return 0
 

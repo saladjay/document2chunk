@@ -33,3 +33,7 @@ d2c_outputs/
 .env.local
 .env.*.local
 .claude/worktrees/
+
+# timing JSONL 日志（默认 ./logs；容器挂卷 d2c_logs）
+logs/
+d2c_logs/

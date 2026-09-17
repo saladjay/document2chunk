@@ -341,6 +341,39 @@ def test_md_passthrough_status(timing_dir):
     assert rec["status"] == "passthrough"
 
 
+def test_txt_passthrough_status(timing_dir):
+    """.txt 转录与 .md 直通对称：status=passthrough（ASCII 安全字节避免编码歧义）。"""
+    serve.parse_to_zip(b"hello txt", "t.txt")
+    rec = _last_timing(timing_dir)
+    assert rec["status"] == "passthrough"
+
+
+def test_legacy_fallback_normalize_stage_recorded(timing_dir, monkeypatch):
+    """指纹兜底重跑路径的 timing：legacy 归一化耗时归属 normalize 阶段（第七阶段，仅回退出现）。
+
+    实际触发路径（本机确定触发；转换执行器 mock 掉，不依赖 soffice）：
+    错标件 filename=.docx 实为 OLE2 → _run 首跑 extract 阶段解包失败
+    （BadZipFile，stage() 的 finally 已记部分耗时）→ 指纹识别 DOC →
+    _normalize_legacy 计入 normalize → mock 转换产物 DOCX_BYTES → 二跑 ok。
+    """
+    from test_format_detect import _fake_ole2
+
+    monkeypatch.setattr(
+        serve, "_legacy_convert",
+        lambda data, in_ext, target, name=None: DOCX_BYTES,
+    )
+    md = _read_md(serve.parse_to_zip(_fake_ole2("WordDocument"), "错标.docx"))
+    assert "测试文档正文段落" in md  # 确认回退重跑确实走通
+    rec = _last_timing(timing_dir)
+    assert rec["status"] == "ok"
+    assert rec["source_type"] == "docx"
+    assert "normalize" in rec["stages"], rec["stages"]
+    for stage in ("detect", "extract", "assemble", "render", "pack"):
+        assert stage in rec["stages"], rec["stages"]
+    # 语义不变：墙钟总耗时 ≥ 各阶段之和（首跑失败耗时 + normalize + 二跑全在内，0.01 容纳逐段取整误差）
+    assert rec["total_s"] + 0.01 >= sum(rec["stages"].values()), rec
+
+
 def test_cli_default_timer(timing_dir, tmp_path):
     src = tmp_path / "in.docx"
     src.write_bytes(DOCX_BYTES)

@@ -369,7 +369,8 @@ def parse_to_files(
         except _FORMAT_EXC_TYPES as exc:
             # 指纹兜底：打开/解包期失败 → 按内容识别归一化（转换/归位/400）后重跑
             raw = source if isinstance(source, (bytes, bytearray)) else Path(source).read_bytes()
-            source, name = _normalize_legacy(raw, name, exc_prefix=str(exc))
+            with timer.stage("normalize"):
+                source, name = _normalize_legacy(raw, name, exc_prefix=str(exc))
             doc = _run(source)
         timer.finish("ok")
         return doc
@@ -472,7 +473,8 @@ def parse_to_zip(
             except _FORMAT_EXC_TYPES as exc:
                 # 指纹兜底：打开/解包期失败 → 按内容识别归一化（转换/归位/400）后重跑
                 raw = source if isinstance(source, (bytes, bytearray)) else Path(source).read_bytes()
-                source, name = _normalize_legacy(raw, name, exc_prefix=str(exc))
+                with timer.stage("normalize"):
+                    source, name = _normalize_legacy(raw, name, exc_prefix=str(exc))
                 zip_bytes = _run(source)
             timer.finish("ok")
             return zip_bytes
