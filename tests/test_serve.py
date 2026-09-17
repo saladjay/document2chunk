@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import io
+import json
 import re
 import zipfile
 
@@ -273,3 +274,78 @@ def test_parse_to_zip_save_dir_default_off():
     z = zipfile.ZipFile(io.BytesIO(zip_bytes))
     assert z.namelist() == ["result.md"]
     assert z.read("result.md") == MD_BYTES
+
+
+# ---------------------------------------------------------------- timing 打点
+
+
+@pytest.fixture
+def timing_dir(tmp_path, monkeypatch):
+    d = tmp_path / "logs"
+    monkeypatch.setenv("DOCUMENT2CHUNK_LOG_DIR", str(d))
+    return d
+
+
+def _last_timing(timing_dir):
+    files = list(timing_dir.glob("timing-*.jsonl"))
+    assert len(files) == 1, files
+    return json.loads(files[0].read_text(encoding="utf-8").splitlines()[-1])
+
+
+def test_zip_mode_records_stages(timing_dir):
+    serve.parse_to_zip(DOCX_BYTES, "t.docx")
+    rec = _last_timing(timing_dir)
+    assert rec["status"] == "ok"
+    assert rec["file"] == "t.docx"
+    assert rec["size_bytes"] == len(DOCX_BYTES)
+    assert rec["mode"] == "zip"
+    assert rec["source_type"] == "docx"
+    for stage in ("detect", "extract", "assemble", "render", "pack"):
+        assert stage in rec["stages"], rec["stages"]
+    assert "demote" not in rec["stages"]  # demote=False 不出现
+
+
+def test_demote_stage_recorded_when_enabled(timing_dir):
+    serve.parse_to_zip(DOCX_BYTES, "t.docx", demote=True)
+    rec = _last_timing(timing_dir)
+    assert rec["demote"] is True
+    assert "demote" in rec["stages"]
+
+
+def test_error_records_partial_stages(timing_dir, monkeypatch):
+    import pymupdf
+
+    from document2chunk.extractors.pdf import PdfExtractor
+
+    def _boom(self, source, **kw):  # noqa: ANN001
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(PdfExtractor, "extract", _boom)
+    # 真 PDF：_extract_with_images 先用 pymupdf 取页几何，坏字节会提前 FileDataError
+    # （到不了 extractor）；显式 source_type 跳过 detect 的 pdf_detect，让 RuntimeError 落在 extract 阶段
+    _d = pymupdf.open()
+    _d.new_page()
+    pdf_bytes = _d.tobytes()
+    _d.close()
+    with pytest.raises(RuntimeError):
+        serve.parse_to_zip(pdf_bytes, "bad.pdf", source_type="pdf")
+    rec = _last_timing(timing_dir)
+    assert rec["status"] == "error"
+    assert rec["error_type"] == "RuntimeError"
+    assert len(rec["stages"]) >= 1  # 已完成阶段留痕
+
+
+def test_md_passthrough_status(timing_dir):
+    serve.parse_to_zip(MD_BYTES, "t.md")
+    rec = _last_timing(timing_dir)
+    assert rec["status"] == "passthrough"
+
+
+def test_cli_default_timer(timing_dir, tmp_path):
+    src = tmp_path / "in.docx"
+    src.write_bytes(DOCX_BYTES)
+    serve.cli_main(["--input", str(src), "--output", str(tmp_path / "out"), "--images", str(tmp_path / "img")])
+    rec = _last_timing(timing_dir)
+    assert rec["mode"] == "cli"
+    assert rec["status"] == "ok"
+    assert rec["file"] == "in.docx"

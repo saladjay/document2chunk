@@ -9,6 +9,8 @@
 （designs/009），serve 层不再叠加。result.md 为**全文**（主文 + 附件）。
 例外早退：.md 解码（UTF-8 优先 / GB18030 回退 / 剥 BOM，失败回退字节直通）、
 .txt 转录（同前），两者都过 text_titles.restore_titles 复原缺失标题后输出。
+
+可观测性：timer（document2chunk.timing.StageTimer）可选传入；缺省自建（CLI 自动记录）。
 """
 from __future__ import annotations
 
@@ -23,7 +25,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Optional, Union
 
-from document2chunk.api import _assemble
+from document2chunk.api import _assemble, _source_name
+from document2chunk.timing import StageTimer, reset_current_timer, set_current_timer
 from document2chunk.exceptions import Document2ChunkError, UnsupportedFormatError
 from document2chunk.ir import (
     DocumentMetadata,
@@ -301,8 +304,12 @@ def parse_to_files(
     *,
     demote: bool = False,
     source_type: Any = None,  # noqa: F821
+    timer: Optional[StageTimer] = None,
 ) -> LogicalDocument:
-    """路径模式：解析 source，写 output_dir/result.md + image_dir/ 图片。"""
+    """路径模式：解析 source，写 output_dir/result.md + image_dir/ 图片。
+
+    timer 缺省时自建（CLI 路径自动获得可观测性）。
+    """
     from document2chunk.api import _route_source_type
 
     output_dir = Path(output_dir)
@@ -310,46 +317,67 @@ def parse_to_files(
     output_dir.mkdir(parents=True, exist_ok=True)
     image_dir.mkdir(parents=True, exist_ok=True)
 
-    source, name = _prepare(source, None)
-
-    if _is_md_name(name):
-        # .md 早退：解码→标题复原→UTF-8 无 BOM 写 result.md；解码失败回退字节直通
-        raw = source if isinstance(source, (bytes, bytearray)) else Path(source).read_bytes()
-        text = _decode_text(raw)
-        out = _restore_text(text, name).encode("utf-8") if text is not None else raw
-        (output_dir / "result.md").write_bytes(out)
-        return _minimal_doc(name)
-
-    if _is_txt_name(name):
-        # .txt 转录：解码规范化为 UTF-8 无 BOM + 标题复原，写 result.md
-        raw = source if isinstance(source, (bytes, bytearray)) else Path(source).read_bytes()
-        (output_dir / "result.md").write_bytes(_txt_to_utf8(raw))
-        return _minimal_doc(name)
-
-    def _run(src) -> LogicalDocument:
-        # 主/兜底共用的组装段（提取避免复制）：路由→提取→组装→元数据→写盘
-        st = _route_source_type(src, source_type)
-        result, geo = _extract_with_images(src, st, str(image_dir))
-        doc = _assemble(result, False)
-
-        if doc.metadata.source_file is None and name:
-            doc.metadata.source_file = name
-        if doc.metadata.source_type is None:
-            doc.metadata.source_type = st
-
-        if demote:
-            _apply_demote(doc)
-        _prefix_image_ids(doc, image_dir.name + "/")
-        (output_dir / "result.md").write_text(_doc_markdown(doc), encoding="utf-8")
-        return doc
+    timer = timer or StageTimer(file=_source_name(source), mode="cli", demote=demote)
+    token = set_current_timer(timer)
 
     try:
-        return _run(source)
-    except _FORMAT_EXC_TYPES as exc:
-        # 指纹兜底：打开/解包期失败 → 按内容识别归一化（转换/归位/400）后重跑
-        raw = source if isinstance(source, (bytes, bytearray)) else Path(source).read_bytes()
-        source, name = _normalize_legacy(raw, name, exc_prefix=str(exc))
-        return _run(source)
+        source, name = _prepare(source, None)
+
+        if _is_md_name(name):
+            # .md 早退：解码→标题复原→UTF-8 无 BOM 写 result.md；解码失败回退字节直通
+            raw = source if isinstance(source, (bytes, bytearray)) else Path(source).read_bytes()
+            text = _decode_text(raw)
+            out = _restore_text(text, name).encode("utf-8") if text is not None else raw
+            (output_dir / "result.md").write_bytes(out)
+            timer.finish("passthrough")
+            return _minimal_doc(name)
+
+        if _is_txt_name(name):
+            # .txt 转录：解码规范化为 UTF-8 无 BOM + 标题复原，写 result.md
+            raw = source if isinstance(source, (bytes, bytearray)) else Path(source).read_bytes()
+            (output_dir / "result.md").write_bytes(_txt_to_utf8(raw))
+            timer.finish("passthrough")
+            return _minimal_doc(name)
+
+        def _run(src) -> LogicalDocument:
+            # 主/兜底共用的组装段（提取避免复制）：路由→提取→组装→元数据→写盘
+            with timer.stage("detect"):
+                st = _route_source_type(src, source_type)
+            timer.source_type = st.value
+            with timer.stage("extract"):
+                result, geo = _extract_with_images(src, st, str(image_dir))
+            with timer.stage("assemble"):
+                doc = _assemble(result, False)
+
+            if doc.metadata.source_file is None and name:
+                doc.metadata.source_file = name
+            if doc.metadata.source_type is None:
+                doc.metadata.source_type = st
+
+            if demote:
+                with timer.stage("demote"):
+                    _apply_demote(doc)
+            _prefix_image_ids(doc, image_dir.name + "/")
+            with timer.stage("render"):
+                md = _doc_markdown(doc)
+            with timer.stage("pack"):
+                (output_dir / "result.md").write_text(md, encoding="utf-8")
+            return doc
+
+        try:
+            doc = _run(source)
+        except _FORMAT_EXC_TYPES as exc:
+            # 指纹兜底：打开/解包期失败 → 按内容识别归一化（转换/归位/400）后重跑
+            raw = source if isinstance(source, (bytes, bytearray)) else Path(source).read_bytes()
+            source, name = _normalize_legacy(raw, name, exc_prefix=str(exc))
+            doc = _run(source)
+        timer.finish("ok")
+        return doc
+    except Exception as exc:  # noqa: BLE001
+        timer.finish("error", error_type=type(exc).__name__)
+        raise
+    finally:
+        reset_current_timer(token)
 
 
 def parse_to_zip(
@@ -360,79 +388,101 @@ def parse_to_zip(
     demote: bool = False,
     source_type: Any = None,  # noqa: F821
     save_dir: Optional[str] = None,
+    timer: Optional[StageTimer] = None,
 ) -> bytes:
     """zip 模式：解析 data，返回 zip 字节流（根目录 result.md + images/）。
 
     save_dir 非空时落盘留痕（request.bin + response.zip + 解包产物），失败仅告警。
     老格式（.doc/.rtf/... 后缀直转，或解析失败后指纹兜底）先归一化为 docx/pdf。
+    timer 缺省时自建。
     """
     from document2chunk.api import _route_source_type
 
-    source, name = _prepare(data, filename)
+    timer = timer or StageTimer(file=filename, size_bytes=len(data), mode="zip", demote=demote)
+    token = set_current_timer(timer)
 
-    if _is_md_name(name):
-        # .md 早退：解码→标题复原→UTF-8 无 BOM 打包；解码失败回退原始字节直通
-        text = _decode_text(source)
-        out = _restore_text(text, name).encode("utf-8") if text is not None else source
-        buf = io.BytesIO()
-        with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
-            zf.writestr("result.md", out)
-        zip_bytes = buf.getvalue()
-        if save_dir:
-            _save_zip_artifacts(save_dir, name, data, zip_bytes)
-        return zip_bytes
-
-    if _is_txt_name(name):
-        # .txt 转录：不进 extractor/postprocess，转 UTF-8 无 BOM + 标题复原后打包
-        buf = io.BytesIO()
-        with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
-            zf.writestr("result.md", _txt_to_utf8(source))
-        zip_bytes = buf.getvalue()
-        if save_dir:
-            _save_zip_artifacts(save_dir, name, data, zip_bytes)
-        return zip_bytes
-
-    tmp = Path(tempfile.mkdtemp(prefix="d2c_zip_"))
     try:
-        image_dir = tmp / image_dir_name
+        source, name = _prepare(data, filename)
 
-        def _run(src) -> bytes:
-            # 主/兜底共用的组装打包段（提取避免复制）：路由→提取→组装→元数据→打包
-            st = _route_source_type(src, source_type)
-            result, geo = _extract_with_images(src, st, str(image_dir))
-            doc = _assemble(result, False)
-            if name and doc.metadata.source_file is None:
-                doc.metadata.source_file = name
-            if doc.metadata.source_type is None:
-                doc.metadata.source_type = st
-            if demote:
-                _apply_demote(doc)
-            _prefix_image_ids(doc, image_dir_name + "/")
-            md = _doc_markdown(doc)
-
+        if _is_md_name(name):
+            # .md 早退：解码→标题复原→UTF-8 无 BOM 打包；解码失败回退原始字节直通
+            text = _decode_text(source)
+            out = _restore_text(text, name).encode("utf-8") if text is not None else source
             buf = io.BytesIO()
             with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
-                zf.writestr("result.md", md)
-                if image_dir.exists():
-                    for img in sorted(image_dir.rglob("*")):
-                        if img.is_file():
-                            arc = img.relative_to(tmp).as_posix()  # images/xxx.png
-                            zf.write(img, arc)
+                zf.writestr("result.md", out)
             zip_bytes = buf.getvalue()
             if save_dir:
-                # 留痕收「请求原件」：request.bin 用收到的原始 data（非转换产物）
                 _save_zip_artifacts(save_dir, name, data, zip_bytes)
+            timer.finish("passthrough")
             return zip_bytes
 
+        if _is_txt_name(name):
+            # .txt 转录：不进 extractor/postprocess，转 UTF-8 无 BOM + 标题复原后打包
+            buf = io.BytesIO()
+            with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+                zf.writestr("result.md", _txt_to_utf8(source))
+            zip_bytes = buf.getvalue()
+            if save_dir:
+                _save_zip_artifacts(save_dir, name, data, zip_bytes)
+            timer.finish("passthrough")
+            return zip_bytes
+
+        tmp = Path(tempfile.mkdtemp(prefix="d2c_zip_"))
         try:
-            return _run(source)
-        except _FORMAT_EXC_TYPES as exc:
-            # 指纹兜底：打开/解包期失败 → 按内容识别归一化（转换/归位/400）后重跑
-            raw = source if isinstance(source, (bytes, bytearray)) else Path(source).read_bytes()
-            source, name = _normalize_legacy(raw, name, exc_prefix=str(exc))
-            return _run(source)
+            image_dir = tmp / image_dir_name
+
+            def _run(src) -> bytes:
+                # 主/兜底共用的组装打包段（提取避免复制）：路由→提取→组装→元数据→打包
+                with timer.stage("detect"):
+                    st = _route_source_type(src, source_type)
+                timer.source_type = st.value
+                with timer.stage("extract"):
+                    result, geo = _extract_with_images(src, st, str(image_dir))
+                with timer.stage("assemble"):
+                    doc = _assemble(result, False)
+                if name and doc.metadata.source_file is None:
+                    doc.metadata.source_file = name
+                if doc.metadata.source_type is None:
+                    doc.metadata.source_type = st
+                if demote:
+                    with timer.stage("demote"):
+                        _apply_demote(doc)
+                _prefix_image_ids(doc, image_dir_name + "/")
+                with timer.stage("render"):
+                    md = _doc_markdown(doc)
+
+                with timer.stage("pack"):
+                    buf = io.BytesIO()
+                    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+                        zf.writestr("result.md", md)
+                        if image_dir.exists():
+                            for img in sorted(image_dir.rglob("*")):
+                                if img.is_file():
+                                    arc = img.relative_to(tmp).as_posix()  # images/xxx.png
+                                    zf.write(img, arc)
+                    zip_bytes = buf.getvalue()
+                    if save_dir:
+                        # 留痕收「请求原件」：request.bin 用收到的原始 data（非转换产物）
+                        _save_zip_artifacts(save_dir, name, data, zip_bytes)
+                return zip_bytes
+
+            try:
+                zip_bytes = _run(source)
+            except _FORMAT_EXC_TYPES as exc:
+                # 指纹兜底：打开/解包期失败 → 按内容识别归一化（转换/归位/400）后重跑
+                raw = source if isinstance(source, (bytes, bytearray)) else Path(source).read_bytes()
+                source, name = _normalize_legacy(raw, name, exc_prefix=str(exc))
+                zip_bytes = _run(source)
+            timer.finish("ok")
+            return zip_bytes
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
+    except Exception as exc:  # noqa: BLE001
+        timer.finish("error", error_type=type(exc).__name__)
+        raise
     finally:
-        shutil.rmtree(tmp, ignore_errors=True)
+        reset_current_timer(token)
 
 
 def cli_main(argv: Optional[list] = None) -> int:
