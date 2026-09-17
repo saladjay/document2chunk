@@ -28,56 +28,48 @@
 
 ---
 
-## B. ▢ 可自主开工(方案已定,未排期施工)
+## B. ▢ 可自主开工 → ✅ 全部处置完毕(2026-09-17,分支 feat/open-issues-sweep)
 
-### S-1 `/parse-pdf` zip 落盘 + FileResponse;上传流式(**建议下一个做**)
+### S-1 `/parse-pdf` zip 落盘 + 上传流式 —— ✅ 已实施(2b8c213)
 
-| | |
+`serve.parse_to_zip_file(data|path, out_path=...)`:zip 直写文件不整包驻留内存;`parse_to_zip` 保留为内存版兼容包装。api 层:上传 1MB 分块流式落盘→传路径→`FileResponse` 流式回传+BackgroundTask 清理——**请求/响应两端内存有界,P0-3 收口**。顺带:zip 路径补齐 S-5a 门控、`_sniff_source_type` 支持路径读文件头(路径模式与字节模式行为对齐)。测试 `test_s1_zip_file`(3)。
+
+### S-2 提取阶段子进程化 —— ✅ 已实施(83a29ce)
+
+`pipeline/pdf_extract_worker`:子进程跑完整 PDF 提取→ExtractionResult JSON 落盘→父进程回载;`extract_pdf_guarded` 超时 SIGKILL→InvalidSourceError。serve PDF 分支默认启用(env `DOCUMENT2CHUNK_EXTRACT_TIMEOUT` 默认 600s,0=关)。**毒 PDF 在 detect 与提取两阶段都被关在子进程里,服务不再可被楔死**。等价:序列化往返逐字节保真(测试断言);代价:每 PDF 一次子进程冷启动 ~0.3-1s。测试 `test_s2_extract_guard`(6)。
+
+### S-3 O(n²) 热点 —— ✅ 改 2 处 + 审查后不改 3 处(8264fbf + 3ac7571)
+
+| 位置 | 处置 |
 | --- | --- |
-| 现状 | 响应 zip 仍在内存 `BytesIO` 拼完整字节再 `Response(content=zip_bytes)`(`serve.py` `parse_to_zip`、`api.py` `_chai_parse`);上传仍 `await upload.read()` 整读。round-1 只修了"事件循环阻塞"这一半,**内存峰值线(P0-3)未动**:143MB 级文档单请求峰值可达 GB,4G 容器 1-2 个并发即 OOM 风险 |
-| 方案 | ① `parse_to_zip` 改写临时文件(复用现有 `d2c_zip_` 临时目录模式),`FileResponse(path)` + BackgroundTask 发送后清理;② `/parse-json` 同法;③ 上传侧:`await request.stream()` 落盘(需动 multipart 读取方式,工程量中等,可与 ① 分期) |
-| 等价性 | zip 字节内容不变(落盘≠改内容);对照门槛:基线 manifest 全 PASS |
-| 验收 | equiv harness 全 PASS + 大文档并发内存实测(容器 stats 观察) |
+| `merge.py` 段落拼接 O(L²) | **已改**:parts 惰性累积+段尾 join;重复抽取检测 bbox 短路先行,join 仅罕见路径 |
+| `is_standalone_line` 页内 O(n²) | **已改**:页级 (center_y,pos) 预排序+二分窗口,同一谓词;老调用路径保留 |
+| `pdf.py:359` 行×表 bbox | **不改**:复查确认 table_bboxes 本就同页,表数每页个位数,无优化价值 |
+| `image_detection` O(图×元素)/O(图²) | **不改**:页级规模小(图个位数×元素数百),改写不划算 |
+| `_reorder_overlapping` 冒泡 | **不改**:冒泡回退带视觉顺序语义,改写等价风险>收益 |
 
-### S-2 提取阶段子进程化(毒 PDF 完整防线)
+⚠️ **实测教训**:merge 初版无条件取 `current["markdown"]`/重置行取新元素键——30MB 语料文件即 KeyError(harness 当场捕获);已改三处防御式 `.get` 并补两条回归测试(缺键初始化/重置路径)。教训:**手搓 fixture 元素要覆盖"缺可选键"变体**。
 
-| | |
+### S-4 冗余内存副本 —— ⏸ 调查后决定不做(收益<风险)
+
+- **S-4a** pipeline element 三份文本:`markdown` 键有真实消费方(`toc_detection.py:168-171` 并行拼接),去重需跨 stage 重构,收益(临时 dict 内存)与风险不成比例。**不改**。
+- **S-4b** IR `text`+`runs` 双份:属于 /parse-json JSON 契约面,动它=O-1 级契约决策;且两份服务不同消费路径(text 供后处理/导出,runs 供样式导出)。**不做**,如未来要动需单独确认消费方。
+
+### S-5 P2 长尾 —— ✅ 4 项全做(b8ea1c6)
+
+| 项 | 处置 |
 | --- | --- |
-| 现状 | round-2 看门狗只护住 detect(已知楔死点,killer.pdf 在 detect 期 `page.get_text` 楔死);**提取期**(`PdfExtractor.extract` 内的 span 提取/渲染/管线)理论上仍可被病态件楔死 worker 线程(线程池工人被占死,并发额度泄漏) |
-| 方案 | `PdfExtractor.extract` 整体子进程化:临时文件传入,子进程跑完整提取,产物(ExtractionResult)序列化回传;超时 SIGKILL → InvalidSourceError。可复用 `detect_pdf_type_guarded` 的骨架;需解决 ExtractionResult 序列化往返(pydantic 模型,可行)。备选轻量版:仅给 `page.get_text`/渲染等 MuPDF C 调用密集段包子进程 |
-| 等价性 | 子进程同版本同结果;对照门槛同上。注意与 round-1 `skip_detect`、图片落盘目录(image_dir 在子进程侧写,主进程消费)的交互 |
-| 验收 | harness 全 PASS + killer.pdf(`_forensics/killer.pdf`)实测:请求 422 快速失败、服务存活、后续请求正常 |
-
-### S-3 P1-3 其余 O(n²) 热点(长尾)
-
-| 位置 | 模式 | 备注 |
-| --- | --- | --- |
-| `pipeline/stages/classification.py:63-77` → `heading_scorer.py:64-77` | `is_standalone_line` 每元素扫同页全部元素,页内 O(n²) | 页索引化(同 filter_noise 手法)即可等价消除 |
-| `pipeline/stages/image_detection.py:194-199,258-261` | O(图×元素) + 页内图片两两求交 O(图²) | 同上 |
-| `pipeline/stages/merge.py:73-74` | 段落合并 `text = text + elem` 单段 O(L²) | 改 list-append + join |
-| `pdf.py:445-463` | `_reorder_overlapping` 冒泡带回退最坏 O(n²) | 需先证等价(回退语义) |
-| `pdf.py:359` | 每行 × 全部表格 bbox 重叠检测 | 表 bbox 按页分组 |
-
-### S-4 P1-4 冗余内存副本(长尾)
-
-| 位置 | 内容 |
-| --- | --- |
-| `pdf.py:387-409` | pipeline element 同文本存 3 份(`text`/`markdown`/`spans[]`),映射 BlockNode 后才释放——可去 `markdown` 键或延迟构建 |
-| `ir/models.py:106-109` + `ocr/_mapping.py:319` + `_geo_reconstruct.py:328-331` | IR 每块 `text`+`runs` 双份存同一文本——去一方需动导出/下游,影响面大,放最后 |
-
-### S-5 P2 长尾
-
-| 项 | 内容 |
-| --- | --- |
-| legacy 兜底重跑 | 解析失败→识别→soffice→**整条管线重跑**(最坏整档解析 2 次,`serve.py:346-352,427-433`);可把首轮异常分类后只对"疑似老格式"走转换 |
-| 表格 geo_ocr 引擎复用 | `_cell_ocr.py:20-24,72-74`:同页 T 张表 = T 次新建 PaddleOCR 引擎 + T 次整页 OCR;引擎提为模块级单例 + 同页 OCR 结果复用 |
-| `_save_zip_artifacts` 无轮转 | `serve.py:51-77`:留痕(request.bin/response.zip/解包)只写不清,磁盘慢性泄漏;按大小/天数轮转 |
-| OCR model-runtime 探测 | `ocr/extractor.py:70-75`:每次解析都 GET 一次 active_model;可缓存 + TTL |
+| legacy 兜底重跑 | ✅ identify 门控:内容可解析(DOCX/PDF/IMAGE)直接重抛首轮错误,省一次整档二次解析;真老格式转换路径不变(守卫测试) |
+| geo_ocr 引擎复用 | ✅ PaddleOCR 引擎进程级单例+双检锁 |
+| 留痕轮转 | ✅ `_cleanup_save_artifacts` 按天轮转(`DOCUMENT2CHUNK_SAVE_RETENTION_DAYS` 默认 30,0=关) |
+| model-runtime 探测 | ✅ active_model 进程级 TTL 缓存(`DOCUMENT2CHUNK_OCR_MODEL_TTL` 默认 300,0=关),失败不入缓存 |
 
 ---
 
 ## 备注
 
+- **台账状态(2026-09-17 收口)**:A 类 2 项决议关闭(O-1 已实施/O-2 保持默认关),B 类 5 组全部处置完毕(S-1/2/5 已实施,S-3 改 2 处+3 处审查不改,S-4 调查后不做)。**open issues 清零**,剩余仅"部署待办"(分支 feat/open-issues-sweep 未合 main 未部署)。
+- round-3 对照:PASS 23 / FAIL 0 / SKIP 6,1.22×(基线 100.2s → 82.4s);全量 386 passed。
 - 以上全部属于**大文件提效**工作流。DOCX 解析质量的 P0(A1 开头守卫、doc_title 位置约束,issues6 根因 #1/#2)**不在本台账**,归 docx 质量工作流,勿混淆。
-- round-1/2 已关闭项(缓存/惰性/线程池/并发/看门狗等)见 `docs/大文件提效调研.md` §7.1/§7.2,不在本文件重复。
-- B 类施工一律走既定流程:TDD(先红后绿)→ 全量 pytest → equiv harness 对照(基线 `D:\document2chunk-equiv\manifest.baseline.snapshot.jsonl`)→ 合 main 双推 → 112 重建验证。
+- round-1/2 已关闭项见 `docs/大文件提效调研.md` §7.1/§7.2,不在本文件重复。
+- 施工流程:TDD(先红后绿)→ 全量 pytest → equiv harness 对照(基线 `D:\document2chunk-equiv\manifest.baseline.snapshot.jsonl`)→ 合 main 双推 → 112 重建验证。
