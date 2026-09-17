@@ -11,6 +11,7 @@
 
 from __future__ import annotations
 
+import bisect
 import re
 from typing import Optional
 
@@ -27,6 +28,9 @@ def is_standalone_line(
     page_width: float,
     page_height: float,
     width_ratio_threshold: float = 0.65,
+    *,
+    sorted_center_ys: Optional[list[tuple[float, int]]] = None,
+    elem_pos: int = -1,
 ) -> bool:
     """判断元素是否"独立一行"。
 
@@ -61,6 +65,18 @@ def is_standalone_line(
         return False
 
     # 条件 1：同行无其他元素
+    # 页级预排序 + 二分窗口（issues7 S-3）：与逐元素线性扫描同一谓词，
+    # 每页 O(n log n) 预处理替代每元素 O(n) 扫描。sorted_center_ys = [(center_y, 原始下标)]。
+    if sorted_center_ys is not None and 0 <= elem_pos < len(all_elements):
+        lo = bisect.bisect_left(sorted_center_ys, (elem_center_y - _SAME_LINE_TOLERANCE,))
+        hi = bisect.bisect_right(
+            sorted_center_ys, (elem_center_y + _SAME_LINE_TOLERANCE, float("inf"))
+        )
+        for i in range(lo, hi):
+            if sorted_center_ys[i][1] != elem_pos:
+                return False
+        return True
+
     for other in all_elements:
         if other is elem:
             continue

@@ -60,7 +60,14 @@ class ClassificationStage:
         page_w = getattr(ctx, "page_width", 0) or 0
         page_h = getattr(ctx, "page_height", 0) or 0
 
-        for elem in elements:
+        # 页级预排序 (center_y, 原始下标)：is_standalone_line 二分窗口用（issues7 S-3）
+        sorted_center_ys = sorted(
+            ((e["bbox"][1] + e["bbox"][3]) / 2, i)
+            for i, e in enumerate(elements)
+            if e.get("bbox") and len(e["bbox"]) >= 4
+        )
+
+        for elem_pos, elem in enumerate(elements):
             if elem.get("type") in _SKIP_TYPES:
                 continue
 
@@ -70,6 +77,7 @@ class ClassificationStage:
             self._classify_pdf(
                 elem, style, body_font, body_size, scorer,
                 elements, page_w, page_h,
+                sorted_center_ys=sorted_center_ys, elem_pos=elem_pos,
             )
 
             scorer.apply_to(elem)
@@ -88,6 +96,9 @@ class ClassificationStage:
         all_elements: list[dict],
         page_width: float,
         page_height: float,
+        *,
+        sorted_center_ys: list[tuple[float, int]] | None = None,
+        elem_pos: int = -1,
     ) -> None:
         font = style.get("font", "")
         size = style.get("size", 0)
@@ -143,7 +154,10 @@ class ClassificationStage:
 
         # 信号 3：独立成行
         if page_width > 0 and page_height > 0:
-            standalone = is_standalone_line(elem, all_elements, page_width, page_height)
+            standalone = is_standalone_line(
+                elem, all_elements, page_width, page_height,
+                sorted_center_ys=sorted_center_ys, elem_pos=elem_pos,
+            )
             if standalone:
                 scorer.add_score(
                     stage="classification",

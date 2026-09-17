@@ -61,25 +61,34 @@ class MergeStage:
 
         merged: list[dict] = []
         current = self._copy_elem(elements[0])
+        # 文本/markdown 惰性累积（issues7 S-3）：逐次 `str + str` 重建整串是单段 O(L²)；
+        # 改 parts 列表，仅在段收尾 join。重复抽取检测的 bbox 短路先行，文本比较罕见路径才 join。
+        cur_text: list[str] = [current["text"]]
+        cur_md: list[str] = [current["markdown"]]
 
         for elem in elements[1:]:
             # 位置去重：相邻元素 bbox 近似相同 = PyMuPDF 重复抽取同一行（HTML-PDF 常见），
             # 丢一份而非拼接（否则标题文本翻倍）。四坐标差均 <2pt 判为同位置。
-            if MergeStage._is_duplicate_extraction(current, elem):
+            # （与 _is_duplicate_extraction 同谓词；bbox 不近似时零 join 开销）
+            eb = elem.get("bbox")
+            cb = current.get("bbox")
+            if (
+                eb and cb and len(eb) >= 4 and len(cb) >= 4
+                and all(abs(a - b) <= 2.0 for a, b in zip(cb[:4], eb[:4]))
+                and "".join(cur_text) == (elem.get("text") or "")
+            ):
                 continue
 
             if self._can_merge(current, elem, standard_spacing):
                 # 合并文本
-                current["text"] = current["text"] + elem["text"]
-                current["markdown"] = current["markdown"] + elem["markdown"]
+                cur_text.append(elem["text"])
+                cur_md.append(elem["markdown"])
 
                 # 传播低置信标记（OCR：任一组成行低置信则整段低置信；PDF 无此键，无副作用）
                 if elem.get("low_confidence"):
                     current["low_confidence"] = True
 
                 # 更新 bbox（取极值）
-                cb = current["bbox"]
-                eb = elem["bbox"]
                 current["bbox"] = [
                     min(cb[0], eb[0]),
                     min(cb[1], eb[1]),
@@ -90,9 +99,15 @@ class MergeStage:
                 # 合并 spans
                 current["spans"].extend(elem.get("spans", []))
             else:
+                current["text"] = "".join(cur_text)
+                current["markdown"] = "".join(cur_md)
                 merged.append(current)
                 current = self._copy_elem(elem)
+                cur_text = [current["text"]]
+                cur_md = [current["markdown"]]
 
+        current["text"] = "".join(cur_text)
+        current["markdown"] = "".join(cur_md)
         merged.append(current)
         return merged
 
