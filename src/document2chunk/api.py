@@ -39,6 +39,25 @@ _PARSE_CONCURRENCY = max(1, int(os.environ.get("DOCUMENT2CHUNK_PARSE_CONCURRENCY
 _parse_slots = threading.BoundedSemaphore(_PARSE_CONCURRENCY)
 
 
+def _strip_bytes_fields(node) -> None:
+    """递归剔除序列化树中的 bytes 字段（O-1，issues7）。
+
+    IR 里唯一 bytes 字段是 ImageNode.data（docx 合成图）——/parse-json 响应
+    不再携带图片原始字节（消费方走 image_id+落盘文件），体积大文档可降一个量级。
+    保守按"值是 bytes 就删"处理，不做节点类型判断，未来新增 bytes 字段自动覆盖。
+    """
+    if isinstance(node, dict):
+        for k in list(node.keys()):
+            v = node[k]
+            if isinstance(v, bytes):
+                del node[k]
+            else:
+                _strip_bytes_fields(v)
+    elif isinstance(node, list):
+        for item in node:
+            _strip_bytes_fields(item)
+
+
 def _run_parse_sync(fn: Callable, /, *args, **kwargs):
     """同步解析移入线程池执行（解除事件循环阻塞，healthcheck 不再被解析窗口饿死）。
 
@@ -513,15 +532,19 @@ def create_app():
         if filename and doc.metadata.source_file is None:
             doc.metadata.source_file = filename
 
-        # 单次序列化：model_dump_json 结果直接拼响应体，
-        # 省掉 dumps→loads→再 dumps 的大文档往返（语义等价，JSON 消费方无感）
+        # 单次序列化 + 不携带图片原始字节（O-1，issues7）：
+        # model_dump 直接出 dict（比 dumps→loads 少一份大字符串），剔除 bytes 字段
+        # （ImageNode.data，docx 合成图）后一次 dumps——响应不再含 base64 图片
         from fastapi.responses import Response
 
-        inner = doc.model_dump_json(exclude_none=True)
+        payload = {"document": doc.model_dump(exclude_none=True), "markdown": _to_markdown(doc)}
+        _strip_bytes_fields(payload["document"])
         import json
 
-        body = '{"document":' + inner + ',"markdown":' + json.dumps(_to_markdown(doc)) + "}"
-        return Response(content=body, media_type="application/json")
+        return Response(
+            content=json.dumps(payload, ensure_ascii=False, separators=(",", ":")),
+            media_type="application/json",
+        )
 
     return app
 

@@ -7,27 +7,24 @@
 
 ---
 
-## A. ⏸ 等外部决策(代码已就绪或方案已定,卡在确认)
+## A. 等外部决策 → ✅ 均已决议(2026-09-17)
 
-### O-1 `/parse-json` 剔除 `ImageNode.data`
-
-| | |
-| --- | --- |
-| 现状 | docx 合成图 bytes 以 base64 进 /parse-json 响应(pydantic v2 JSON 模式编 bytes;`exclude_none` 不排除非 None 字段),`api.py` `/parse-json` 处 `model_dump_json(exclude_none=True)` 全量带出。大文档下是响应体积与内存峰值的重要放大项 |
-| 卡点 | 剔除是**可见契约变更**;`parse-pdf接口调用文档.md:235` 标注 /parse-json 为"库级接口,供需要结构化树的调用方",Chai 主契约走 /parse-pdf zip 不吃此字段,**但未逐一确认是否存在其他消费方** |
-| 方案 | 确认无消费方后:响应序列化处 `model_dump_json(exclude=None...)` 或序列化前剥离 `ImageNode.data`(库内 IR 不动,只动 HTTP 出口) |
-| 验收 | 消费方排查记录 + /parse-json 响应回归对比(docx 大件体积前后对比) |
-| 解锁动作 | 问一句:除 Chai 外还有谁在调 /parse-json? |
-
-### O-2 OCR partial(部分结果)默认开
+### O-1 `/parse-json` 剔除 `ImageNode.data` —— ✅ 已确认并实施
 
 | | |
 | --- | --- |
-| 现状 | round-2 已实现选项:`DOCUMENT2CHUNK_OCR_PARTIAL=1` 后单页失败跳过、记 `metadata.custom["ocr"]["failed_pages"]`(1 基页号)+ warning;**默认关 = 全有全无契约不变**。默认关的理由:Chai 契约"200=完整文档",返回缺页文档会被当成功,**缺页永久静默丢失**;而显式报错触发 Chai 整文档重试,瞬时故障自愈 |
-| 卡点 | 与 Chai 对齐:下游必须知情消费 failed_pages(检查+告警/重投),或响应体显式带回失败清单,否则不允许默认开 |
-| 方案 | 与 Chai 约定其一:① 下游检查 failed_pages 并处理;② 响应头/body 加 `x-failed-pages` 显式字段;③ 保持默认关,仅应急时临时开 |
-| 验收 | Chai 侧书面确认消费方式;开默认前跑一轮真实扫描件对照 |
-| 解锁动作 | 与 Chai(128.23.74.3 对接方)沟通 |
+| 决议 | **确认除 Chai 外无消费方**(2026-09-17);Chai 走 /parse-pdf zip 不含此字段 → 剔除安全,已实施 |
+| 实施 | `api.py` `_strip_bytes_fields`:序列化树递归剔除 bytes 字段(保守按"值是 bytes 就删",未来新增 bytes 字段自动覆盖);`/parse-json` 改 `model_dump`(比 dumps→loads 少一份大字符串)→ 剔除 → 单次 `json.dumps`。库内 IR 不动(`ImageNode.data` 仍可用),只动 HTTP 出口 |
+| 测试 | `tests/test_parse_json_no_image_bytes.py`:端点级(响应无 base64/无 data 字段,image_id/format/markdown/其余节点全保留)+ 单元级 |
+| 验收遗留 | 部署后观察 /parse-json 真实响应(当前无生产消费方,风险≈0) |
+
+### O-2 OCR partial(部分结果)默认开 —— ✅ 决议:保持默认关
+
+| | |
+| --- | --- |
+| 决议 | **保持默认关(全有全无)**(2026-09-17)。依据:Chai 侧机制确认——**只要失败就会重新调用**,失败即重试是唯一自愈通道;partial 的"200+缺页"不会触发重试,缺页将永久静默丢失,故不可默认开 |
+| 现状 | partial 保留为**应急选项**:`DOCUMENT2CHUNK_OCR_PARTIAL=1` 手动开启(OCR 服务长时间不可用等场景,知情消费 failed_pages)。默认路径"失败→Chai 重投"即正确设计,无需改动 |
+| 后续 | 无。若未来 Chai 改造为能感知 failed_pages 再重议 |
 
 ---
 
