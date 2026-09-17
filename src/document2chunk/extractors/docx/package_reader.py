@@ -20,6 +20,8 @@ class PackageReader:
             self._zip = zipfile.ZipFile(io.BytesIO(bytes(source)))
         else:
             self._zip = zipfile.ZipFile(str(source))
+        self._rels_elem: Optional[etree._Element] = None  # rels 只解析一次
+        self._rel_cache: dict = {}  # rel_id -> Optional[(target, name, ext)]
 
     def read_bytes(self, name: str) -> Optional[bytes]:
         try:
@@ -53,13 +55,15 @@ class PackageReader:
 
     def header_elements(self) -> list:
         """word/header*.xml 列表（页眉文本进 metadata，不进正文）。"""
-        out = []
+        return list(self.iter_header_elements())
+
+    def iter_header_elements(self):
+        """惰性逐个产出 word/header* 解析树（namelist 顺序，可提前停止）。"""
         for name in self._zip.namelist():
             if name.startswith("word/header"):
                 el = self.read_xml(name)
                 if el is not None:
-                    out.append(el)
-        return out
+                    yield el
 
     def core_properties(self) -> dict:
         root = self.read_xml("docProps/core.xml")
@@ -86,20 +90,42 @@ class PackageReader:
             return None
         return info[1], info[2]
 
+    def _rel_lookup(self, rel_id: str) -> Optional[Tuple[str, str, str]]:
+        """r:id/r:embed → (target, name, ext)，带缓存。rels 树只解析一次，
+        每个 rel_id 只线性扫一次（避免 N 张图 × M 条 rels 的 O(N·M)）。"""
+        if rel_id in self._rel_cache:
+            return self._rel_cache[rel_id]
+        if self._rels_elem is None:
+            self._rels_elem = self.read_xml("word/_rels/document.xml.rels")
+        rels = self._rels_elem
+        result: Optional[Tuple[str, str, str]] = None
+        if rels is not None:
+            # Relationship 节点在 relationships 命名空间，属性无前缀
+            for rel in rels:
+                if rel.get("Id") == rel_id:
+                    target = rel.get("Target") or ""
+                    name = target.rsplit("/", 1)[-1]
+                    ext = target.rsplit(".", 1)[-1].lower() if "." in target else ""
+                    result = (target, name, ext)
+                    break
+        self._rel_cache[rel_id] = result
+        return result
+
+    def rel_target(self, rel_id: str) -> Optional[Tuple[str, str]]:
+        """r:id/r:embed → (媒体 zip 内原名, ext)。只查 rels，绝不解压媒体字节。"""
+        info = self._rel_lookup(rel_id)
+        if info is None:
+            return None
+        return info[1], info[2]
+
     def media_info_for_rel(self, rel_id: str) -> Optional[Tuple[str, bytes, str]]:
         """r:id/r:embed → (媒体 zip 内原名, bytes, ext)。"""
-        rels = self.read_xml("word/_rels/document.xml.rels")
-        if rels is None:
+        info = self._rel_lookup(rel_id)
+        if info is None:
             return None
-        # Relationship 节点在 relationships 命名空间，属性无前缀
-        for rel in rels:
-            if rel.get("Id") == rel_id:
-                target = rel.get("Target") or ""
-                # Target 形如 "media/image1.png"（相对 word/）
-                data = self.read_bytes("word/" + target)
-                if data is None:
-                    return None
-                name = target.rsplit("/", 1)[-1]
-                ext = target.rsplit(".", 1)[-1].lower() if "." in target else ""
-                return name, data, ext
-        return None
+        target, name, ext = info
+        # Target 形如 "media/image1.png"（相对 word/）
+        data = self.read_bytes("word/" + target)
+        if data is None:
+            return None
+        return name, data, ext

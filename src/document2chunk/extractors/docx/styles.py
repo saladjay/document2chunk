@@ -72,6 +72,10 @@ class StyleRegistry:
     def __init__(self) -> None:
         self._styles: Dict[str, StyleDef] = {}
         self._doc_defaults_rpr: Optional[etree._Element] = None
+        # load() 后 styles 不可变，逐段查询可安全缓存（大文档每段落都查）
+        self._chain_cache: Dict[str, List[str]] = {}
+        self._merged_rpr_cache: Dict[str, Dict[str, object]] = {}
+        self._heading_level_cache: Dict[str, Optional[int]] = {}
 
     # ---------------- 解析 ----------------
 
@@ -125,7 +129,9 @@ class StyleRegistry:
         return self._styles.get(style_id)
 
     def _chain(self, style_id: Optional[str]) -> List[str]:
-        """返回继承链（从根到自身），检测循环。"""
+        """返回继承链（从根到自身），检测循环。带缓存（styles 载入后不可变）。"""
+        if style_id in self._chain_cache:
+            return self._chain_cache[style_id]
         chain: List[str] = []
         seen = set()
         cur = style_id
@@ -134,18 +140,27 @@ class StyleRegistry:
             chain.append(cur)
             cur = self._styles[cur].based_on
         chain.reverse()  # root → leaf
+        self._chain_cache[style_id] = chain
         return chain
 
     def heading_level(self, style_id: Optional[str]) -> Optional[int]:
         """沿 basedOn 链查找标题层级。"""
+        if style_id in self._heading_level_cache:
+            return self._heading_level_cache[style_id]
+        lvl: Optional[int] = None
         for sid in self._chain(style_id):
             sdef = self._styles.get(sid)
             if sdef and sdef.is_heading:
-                return sdef.heading_level
-        return None
+                lvl = sdef.heading_level
+                break
+        self._heading_level_cache[style_id] = lvl
+        return lvl
 
     def merged_rpr(self, style_id: Optional[str]) -> Dict[str, object]:
-        """合并 docDefaults → 继承链(root→leaf) 的 rPr。"""
+        """合并 docDefaults → 继承链(root→leaf) 的 rPr。
+        返回缓存对象，调用方不得原地修改（现有调用方 _parse_run 均先 dict(base) 拷贝）。"""
+        if style_id in self._merged_rpr_cache:
+            return self._merged_rpr_cache[style_id]
         merged = parse_rpr(self._doc_defaults_rpr)
         for sid in self._chain(style_id):
             sdef = self._styles.get(sid)
@@ -154,4 +169,5 @@ class StyleRegistry:
             for k, v in parse_rpr(sdef.rpr_elem).items():
                 if v is not None:
                     merged[k] = v
+        self._merged_rpr_cache[style_id] = merged
         return merged

@@ -341,10 +341,21 @@ class DocxExtractor:
         metadata = _meta()
 
         # 页眉文本 → metadata.custom（不进正文，阶段B §4.8）
-        header_lines = [
-            " ".join("".join(h.itertext()).split()) for h in reader.header_elements()
-        ]
-        header_text = " / ".join(x for x in header_lines if x)[:200]
+        # 前缀惰性：只截 200 字符，凑满即停，后续 header part 不再解析。
+        # 停止条件用已拼接的精确长度，保证截断前缀与全量 join 逐字节一致。
+        header_parts: list = []
+        joined_len = 0
+        for h in reader.iter_header_elements():
+            line = " ".join("".join(h.itertext()).split())
+            if not line:
+                continue
+            if header_parts:
+                joined_len += 3  # " / " 分隔符
+            joined_len += len(line)
+            header_parts.append(line)
+            if joined_len >= 200:
+                break
+        header_text = " / ".join(header_parts)[:200]
         if header_text:
             metadata.custom["docx"] = {"header_text": header_text}
 

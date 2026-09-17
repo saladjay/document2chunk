@@ -14,6 +14,7 @@ extractor 跑通路由骨架。
 
 import logging
 import os
+import threading
 from pathlib import Path
 from typing import Any, Callable, Dict, Optional, Protocol, Union, runtime_checkable
 
@@ -31,6 +32,31 @@ from document2chunk.timing import StageTimer, log_arrive
 log = logging.getLogger(__name__)
 
 Source = Union[str, Path, bytes, bytearray]
+
+# 解析并发上限：解析是内存大户（143MB 级文档单请求峰值可达 GB），无界并发必 OOM。
+# 默认 2；可用环境变量调。acquire 在 worker 线程内（阻塞的是线程池工人，不是事件循环）。
+_PARSE_CONCURRENCY = max(1, int(os.environ.get("DOCUMENT2CHUNK_PARSE_CONCURRENCY", "2") or "2"))
+_parse_slots = threading.BoundedSemaphore(_PARSE_CONCURRENCY)
+
+
+def _run_parse_sync(fn: Callable, /, *args, **kwargs):
+    """同步解析移入线程池执行（解除事件循环阻塞，healthcheck 不再被解析窗口饿死）。
+
+    - copy_context()：计时器经 ContextVar 传递，线程不自动继承上下文，
+      不拷贝则 OCR 页级计时静默丢失（docs/大文件提效调研.md §6-3）。
+    - 信号量：限制同时在跑的解析数，防大文档并发内存超卖。
+    """
+    import contextvars
+
+    from starlette.concurrency import run_in_threadpool
+
+    ctx = contextvars.copy_context()
+
+    def _worker():
+        with _parse_slots:
+            return ctx.run(fn, *args, **kwargs)
+
+    return run_in_threadpool(_worker)
 
 # 路由用扩展名
 _PDF_EXT = ".pdf"
@@ -389,7 +415,9 @@ def create_app():
                 timer.finish("error", error_type="FileMissing")
                 raise HTTPException(status_code=400, detail=f"文件不存在: {fp}")
             try:
-                serve.parse_to_files(fp, output_dir, image_dir, demote=demote, timer=timer)
+                await _run_parse_sync(
+                    serve.parse_to_files, fp, output_dir, image_dir, demote=demote, timer=timer
+                )
             except Document2ChunkError as exc:
                 timer.finish("error", error_type=type(exc).__name__)  # 幂等，serve 已 finish 则 no-op
                 raise  # UnsupportedFormat→400 / MissingDependency→503 / 其他→422（注册的 handler）
@@ -412,8 +440,9 @@ def create_app():
         # 输出落盘留痕（线上排查用）：DOCUMENT2CHUNK_SAVE_OUTPUT_DIR 未设置则 None、零行为变化
         save_dir = os.environ.get("DOCUMENT2CHUNK_SAVE_OUTPUT_DIR") or None
         try:
-            zip_bytes = serve.parse_to_zip(
-                data, filename, demote=demote, save_dir=save_dir, timer=timer
+            zip_bytes = await _run_parse_sync(
+                serve.parse_to_zip,
+                data, filename, demote=demote, save_dir=save_dir, timer=timer,
             )
         except Document2ChunkError as exc:
             timer.finish("error", error_type=type(exc).__name__)  # 幂等，serve 已 finish 则 no-op
@@ -466,7 +495,8 @@ def create_app():
     ):
         data, filename = await _read_upload(request)
         st = _coerce_source_type(source_type)
-        doc = parse(
+        doc = await _run_parse_sync(
+            parse,
             data,
             source_type=st,
             keep_toc=keep_toc,
@@ -474,12 +504,16 @@ def create_app():
         )
         if filename and doc.metadata.source_file is None:
             doc.metadata.source_file = filename
+
+        # 单次序列化：model_dump_json 结果直接拼响应体，
+        # 省掉 dumps→loads→再 dumps 的大文档往返（语义等价，JSON 消费方无感）
+        from fastapi.responses import Response
+
+        inner = doc.model_dump_json(exclude_none=True)
         import json
 
-        return {
-            "document": json.loads(doc.model_dump_json(exclude_none=True)),
-            "markdown": _to_markdown(doc),
-        }
+        body = '{"document":' + inner + ',"markdown":' + json.dumps(_to_markdown(doc)) + "}"
+        return Response(content=body, media_type="application/json")
 
     return app
 

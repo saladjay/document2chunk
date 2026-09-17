@@ -9,6 +9,7 @@ from __future__ import annotations
 import binascii
 import io
 import logging
+import threading
 import zipfile
 from dataclasses import dataclass
 from enum import Enum
@@ -117,6 +118,7 @@ def _rules_identify(data: bytes) -> Detection:
 
 
 _MAGIKA_OBJ = None  # 模型实例缓存（进程级，避免每次 5ms 加载）
+_MAGIKA_LOCK = threading.Lock()  # 双检锁：并发解析时只构造一个 onnx 模型（40MB）
 
 
 def _magika_label(data: bytes) -> Optional[str]:
@@ -124,8 +126,10 @@ def _magika_label(data: bytes) -> Optional[str]:
     global _MAGIKA_OBJ
     try:
         if _MAGIKA_OBJ is None:
-            import magika  # 顶层禁止 import（onnxruntime 40MB）
-            _MAGIKA_OBJ = magika.Magika()
+            with _MAGIKA_LOCK:
+                if _MAGIKA_OBJ is None:
+                    import magika  # 顶层禁止 import（onnxruntime 40MB）
+                    _MAGIKA_OBJ = magika.Magika()
         return _MAGIKA_OBJ.identify_bytes(data).output.label  # 如 "wps"/"unknown"
     except Exception as e:  # noqa: BLE001
         logger.warning("magika 识别失败（跳过兜底）: %s: %s", type(e).__name__, e)

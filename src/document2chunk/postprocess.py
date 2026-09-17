@@ -299,6 +299,13 @@ def filter_noise(
     # ── 步骤 3：页码（issues4 判据：底部/顶部带 + 宽度远小于上方文本 + 页码正则）──
     # 页码 y 上方最接近的 bbox 宽度比页码大很多（页码窄），位置 70%-100% 或顶部 8%。
     geo_w = {pg: w for pg, (w, _h) in page_geometry.items()}
+    # 页索引：候选的"上方最近块"扫描只比同页，预建索引把 O(候选×全文块) 降为
+    # O(全文块 + 候选×同页块)。页内顺序 = content 顺序，与原全量扫描逐次比较等价。
+    by_page: Dict[int, list] = {}
+    for o in content:
+        opg = _prov_page(o)
+        if opg is not None:
+            by_page.setdefault(opg, []).append(o)
     pageno_ids: set = set()
     candidates: List[Tuple[int, str, int]] = []  # 序列备用（宽度判据未命中时）
     for b in content:
@@ -321,8 +328,8 @@ def filter_noise(
         my_w = bb[2] - bb[0]
         # 上方最近文本块的宽度（页码上方最接近的 bbox，30% 页高内）
         above_w = 0.0
-        for o in content:
-            if o.id == b.id or _prov_page(o) != pg:
+        for o in by_page.get(pg, ()):
+            if o.id == b.id:
                 continue
             obb = _prov_bbox(o)
             if not obb or len(obb) < 4:

@@ -221,32 +221,19 @@ def _minimal_doc(name: Optional[str]) -> LogicalDocument:
 
 
 def _extract_with_images(source, st: SourceType, image_dir: Optional[str]):
-    """按源类型用对应 extractor 提取（图片落 image_dir）。返回 (result, page_geometry)。"""
+    """按源类型用对应 extractor 提取（图片落 image_dir）。返回 ExtractionResult。"""
     if st == SourceType.OCR:
         from document2chunk.extractors.ocr import OcrExtractor
-        from document2chunk.extractors.ocr._chunker import iter_pages, page_count
         data = source if isinstance(source, (bytes, bytearray)) else open(source, "rb").read()
-        pc = page_count(data)
-        geo = {}
-        for pi, _media, _fname, pw, ph in iter_pages(data, "src"):
-            geo[pi] = (pw, ph)
-            if pi + 1 >= pc:
-                break
-        return OcrExtractor().extract(source, image_out_dir=image_dir), geo
+        return OcrExtractor().extract(source, image_out_dir=image_dir)
     if st == SourceType.DOCX:
         from document2chunk.extractors.docx import DocxExtractor
-        # DOCX 无页几何，page_geometry=None；extract() 内部自跑统一 postprocess
-        return DocxExtractor().extract(source, image_dir=image_dir), None
+        return DocxExtractor().extract(source, image_dir=image_dir)
     from document2chunk.extractors.pdf import PdfExtractor
-    # PDF 页面尺寸
-    import pymupdf as _fitz
-    if isinstance(source, (bytes, bytearray)):
-        _doc = _fitz.open(stream=bytes(source), filetype="pdf")
-    else:
-        _doc = _fitz.open(str(source))
-    geo = {i: (_doc[i].rect.width, _doc[i].rect.height) for i in range(len(_doc))}
-    _doc.close()
-    return PdfExtractor(image_dir=image_dir).extract(source), geo
+    # 路由层 _route_source_type 已用同一确定性判定器（pipeline.pdf_detect）确认 editable，
+    # 提取器内第二次全文档检测是纯冗余（等价性论证见 docs/大文件提效调研.md §7 序2），
+    # 这里跳过；库默认值仍为 False，直接用 PdfExtractor 的调用方行为不变。
+    return PdfExtractor(image_dir=image_dir, skip_detect=True).extract(source)
 
 
 def _walk_blocks(doc: LogicalDocument):
@@ -345,7 +332,7 @@ def parse_to_files(
                 st = _route_source_type(src, source_type)
             timer.source_type = st.value
             with timer.stage("extract"):
-                result, geo = _extract_with_images(src, st, str(image_dir))
+                result = _extract_with_images(src, st, str(image_dir))
             with timer.stage("assemble"):
                 doc = _assemble(result, False)
 
@@ -439,7 +426,7 @@ def parse_to_zip(
                     st = _route_source_type(src, source_type)
                 timer.source_type = st.value
                 with timer.stage("extract"):
-                    result, geo = _extract_with_images(src, st, str(image_dir))
+                    result = _extract_with_images(src, st, str(image_dir))
                 with timer.stage("assemble"):
                     doc = _assemble(result, False)
                 if name and doc.metadata.source_file is None:

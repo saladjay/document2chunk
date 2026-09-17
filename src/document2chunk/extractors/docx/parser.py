@@ -510,9 +510,10 @@ class DocumentParser:
                                 except ValueError:
                                     pass
                 if self._reader is not None:
-                    media = self._reader.media_for_rel(embed)
-                    if media is not None:
-                        _, fmt = media
+                    # 只要 ext；rel_target 不解压图片字节（旧 media_for_rel 会整图读入即弃）
+                    tgt = self._reader.rel_target(embed)
+                    if tgt is not None:
+                        _, fmt = tgt
                 out.append(
                     ImageNode(
                         id=self._bid(),
