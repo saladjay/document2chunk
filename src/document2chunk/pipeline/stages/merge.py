@@ -63,8 +63,9 @@ class MergeStage:
         current = self._copy_elem(elements[0])
         # 文本/markdown 惰性累积（issues7 S-3）：逐次 `str + str` 重建整串是单段 O(L²)；
         # 改 parts 列表，仅在段收尾 join。重复抽取检测的 bbox 短路先行，文本比较罕见路径才 join。
-        cur_text: list[str] = [current["text"]]
-        cur_md: list[str] = [current["markdown"]]
+        cur_text: list[str] = [current.get("text", "")]
+        # 防御式取值:部分元素类型不带 markdown 键(image 等);原实现仅在合并分支触碰该键
+        cur_md: list[str] = [current.get("markdown", "")]
 
         for elem in elements[1:]:
             # 位置去重：相邻元素 bbox 近似相同 = PyMuPDF 重复抽取同一行（HTML-PDF 常见），
@@ -82,7 +83,7 @@ class MergeStage:
             if self._can_merge(current, elem, standard_spacing):
                 # 合并文本
                 cur_text.append(elem["text"])
-                cur_md.append(elem["markdown"])
+                cur_md.append(elem.get("markdown", ""))
 
                 # 传播低置信标记（OCR：任一组成行低置信则整段低置信；PDF 无此键，无副作用）
                 if elem.get("low_confidence"):
@@ -103,8 +104,9 @@ class MergeStage:
                 current["markdown"] = "".join(cur_md)
                 merged.append(current)
                 current = self._copy_elem(elem)
-                cur_text = [current["text"]]
-                cur_md = [current["markdown"]]
+                # 新 current 可能缺 text/markdown 键(30MB 语料实测)——防御式取值
+                cur_text = [current.get("text", "")]
+                cur_md = [current.get("markdown", "")]
 
         current["text"] = "".join(cur_text)
         current["markdown"] = "".join(cur_md)

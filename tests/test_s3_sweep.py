@@ -108,3 +108,35 @@ def test_guard_is_standalone_line_reference_equivalence():
         assert is_standalone_line(elem, elements, pw, ph) == _ref_standalone(
             elem, elements, pw, ph
         )
+
+
+def test_red_merge_survives_missing_markdown_key():
+    """无 markdown 键的元素(image 等)参与合并不得崩溃——30MB 语料实测回归。
+
+    round-3 初版实现无条件取 current["markdown"] → KeyError:'markdown'
+    (harness 30MB PDF 捕获)。守卫:缺键元素正常合并,text 正确,markdown 缺省拼接。
+    """
+    elems = [
+        {"type": "image", "text": "", "bbox": [10, 100, 400, 200],
+         "style": {"size": 10.0}, "spans": []},                       # 无 markdown 键
+        _para("后续正文行。", 220.0),
+        _para("再一行。", 234.0),
+    ]
+    out = MergeStage().process([dict(e) for e in elems], None)
+    texts = [b["text"] for b in out]
+    assert "后续正文行。再一行。" in texts, f"缺 markdown 键的元素不得阻断合并: {texts}"
+
+
+def test_red_merge_survives_missing_markdown_key_reset_path():
+    """重置路径:合并中断段后新 current 缺 text/markdown 键(30MB 语料实测的真正触发点)。"""
+    elems = [
+        _para("第一行。", 100.0),
+        _para("第二行。", 114.0),
+        {"type": "image", "text": "", "bbox": [10, 128, 400, 200],
+         "style": {"size": 10.0}, "spans": []},                       # 断段 + 无键 → 新 current
+        _para("后续正文行。", 220.0),
+    ]
+    out = MergeStage().process([dict(e) for e in elems], None)
+    texts = [b["text"] for b in out]
+    assert texts[0] == "第一行。第二行。"
+    assert "后续正文行。" in texts[1:], f"重置后合并应正常: {texts}"
