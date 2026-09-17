@@ -21,7 +21,7 @@ import re
 import shutil
 import tempfile
 import zipfile
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Optional, Union
 
@@ -43,6 +43,8 @@ logger = logging.getLogger(__name__)
 # 落盘留痕目录名净化：仅留字母数字/中文/./-/_（\w unicode 覆盖中文），其余替换 _
 _SAVE_NAME_BAD_CHARS = re.compile(r"[^\w.\-]")
 _SAVE_NAME_MAX_LEN = 80
+# 留痕子目录时间戳前缀（轮转清理用，S-5c）
+_SAVE_TS_RE = re.compile(r"^(\d{8}-\d{6}-\d{6})__")
 
 
 def _sanitize_save_name(name: Optional[str]) -> str:
@@ -78,6 +80,35 @@ def _save_zip_artifacts(
             "输出落盘留痕失败（不影响解析）save_dir=%s name=%r: %s: %s",
             save_dir, filename, type(e).__name__, e,
         )
+    _cleanup_save_artifacts(save_dir)
+
+
+def _cleanup_save_artifacts(save_dir: str) -> None:
+    """按天轮转留痕目录（issues7 S-5c）：子目录名前缀时间戳（%Y%m%d-%H%M%S-%f）。
+
+    env DOCUMENT2CHUNK_SAVE_RETENTION_DAYS：保留天数，默认 30；0=禁用清理（现行为）。
+    任何失败只 warning，绝不影响主流程。
+    """
+    try:
+        try:
+            days = int(os.environ.get("DOCUMENT2CHUNK_SAVE_RETENTION_DAYS", "30") or "0")
+        except ValueError:
+            days = 30
+        if days <= 0:
+            return
+        cutoff = datetime.now() - timedelta(days=days)
+        for child in Path(save_dir).iterdir():
+            m = _SAVE_TS_RE.match(child.name)
+            if m is None or not child.is_dir():
+                continue
+            try:
+                ts = datetime.strptime(m.group(1), "%Y%m%d-%H%M%S-%f")
+            except ValueError:
+                continue
+            if ts < cutoff:
+                shutil.rmtree(child, ignore_errors=True)
+    except Exception as e:  # noqa: BLE001 —— 清理失败绝不上抛
+        logger.warning("留痕轮转失败（不影响解析）save_dir=%s: %s: %s", save_dir, type(e).__name__, e)
 
 
 def _is_md_name(name: Optional[str]) -> bool:
@@ -354,8 +385,14 @@ def parse_to_files(
         try:
             doc = _run(source)
         except _FORMAT_EXC_TYPES as exc:
-            # 指纹兜底：打开/解包期失败 → 按内容识别归一化（转换/归位/400）后重跑
+            # 指纹兜底：打开/解包期失败 → 按内容识别归一化（转换/归位/400）后重跑。
+            # 门控（issues7 S-5a）：内容本身可解析（DOCX/PDF/IMAGE）说明失败与老格式无关，
+            # 二次全档解析只会复现同一错误——直接重抛，省一次整档解析。
             raw = source if isinstance(source, (bytes, bytearray)) else Path(source).read_bytes()
+            from document2chunk.format_detect import FileKind, identify
+
+            if identify(raw).kind in (FileKind.DOCX, FileKind.PDF, FileKind.IMAGE):
+                raise
             with timer.stage("normalize"):
                 source, name = _normalize_legacy(raw, name, exc_prefix=str(exc))
             doc = _run(source)

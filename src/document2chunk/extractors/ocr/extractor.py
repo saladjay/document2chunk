@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import os
 import time
 from pathlib import Path
 from typing import Optional
@@ -22,6 +23,27 @@ def _read_bytes(source) -> bytes:
         return bytes(source)
     with open(str(source), "rb") as f:
         return f.read()
+
+
+# active_model 进程级 TTL 缓存（issues7 S-5d）：endpoint -> (monotonic_ts, model)。
+# 每次解析都探测一次服务属重复开销；TTL 内直接复用。env DOCUMENT2CHUNK_OCR_MODEL_TTL 默认 300，0=关。
+_ACTIVE_MODEL_CACHE: dict = {}
+
+
+def _get_active_model(client, cfg):
+    ttl = float(os.environ.get("DOCUMENT2CHUNK_OCR_MODEL_TTL", "300") or "0")
+    key = cfg.endpoint
+    now = time.monotonic()
+    hit = _ACTIVE_MODEL_CACHE.get(key)
+    if ttl > 0 and hit is not None and now - hit[0] < ttl:
+        return hit[1]
+    try:
+        model = client.active_model()
+    except OcrServiceError:
+        return cfg.model  # 探测失败回退默认（现行为），失败不入缓存
+    if ttl > 0:
+        _ACTIVE_MODEL_CACHE[key] = (now, model)
+    return model
 
 
 def _dump_response(dump_dir, page_index: int, resp: dict) -> None:
@@ -72,10 +94,7 @@ class OcrExtractor:
         extract_images = bool(getattr(options, "extract_images", True)) if options else True
         model = getattr(options, "ocr_model", None) if options else None
         if not model:
-            try:
-                model = self._client.active_model()
-            except OcrServiceError:
-                model = self._cfg.model
+            model = _get_active_model(self._client, self._cfg)
 
         pcount = page_count(data)
         idc = _Idc()

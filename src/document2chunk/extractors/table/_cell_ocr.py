@@ -12,16 +12,25 @@ lazy import paddleocr；``ocr`` 引擎可注入便于单测。
 
 from __future__ import annotations
 
+import threading
 from typing import Any, Optional, Union
 
 ImageLike = Union[str, Any]  # 文件路径 / PIL.Image / ndarray
 
+_OCR_ENGINE = None  # 进程级单例（issues7 S-5b）：引擎构造重，同页 T 表不再 T 次新建
+_OCR_LOCK = threading.Lock()
+
 
 def _default_ocr():
-    """lazy 创建 paddleocr 引擎（PP-OCRv6，中文，自动文本行方向）。"""
-    from paddleocr import PaddleOCR
+    """lazy 创建 paddleocr 引擎（PP-OCRv6，中文，自动文本行方向）。进程级复用。"""
+    global _OCR_ENGINE
+    if _OCR_ENGINE is None:
+        with _OCR_LOCK:
+            if _OCR_ENGINE is None:
+                from paddleocr import PaddleOCR
 
-    return PaddleOCR(lang="ch", use_textline_orientation=True)
+                _OCR_ENGINE = PaddleOCR(lang="ch", use_textline_orientation=True)
+    return _OCR_ENGINE
 
 
 def _to_predictable(image: ImageLike):
