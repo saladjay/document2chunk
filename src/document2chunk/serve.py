@@ -54,11 +54,14 @@ def _sanitize_save_name(name: Optional[str]) -> str:
 
 
 def _save_zip_artifacts(
-    save_dir: str, filename: Optional[str], data: bytes, zip_bytes: bytes
+    save_dir: str,
+    filename: Optional[str],
+    data: "bytes | bytearray | str | Path",
+    zip_bytes: bytes,
 ) -> None:
     """输出落盘留痕（线上排查 Chai 对接差异）：
 
-    save_dir/<时间戳__净化名>/ 下写 request.bin（收到的原始字节）、
+    save_dir/<时间戳__净化名>/ 下写 request.bin（收到的原始字节；data 为路径时拷贝）、
     response.zip（返回的 zip 字节）、以及从 zip 解包的 result.md + images/。
     任何失败只 log warning，绝不影响解析主流程。
     """
@@ -66,7 +69,10 @@ def _save_zip_artifacts(
         ts = datetime.now().strftime("%Y%m%d-%H%M%S-%f")
         req_dir = Path(save_dir) / f"{ts}__{_sanitize_save_name(filename)}"
         req_dir.mkdir(parents=True, exist_ok=True)
-        (req_dir / "request.bin").write_bytes(bytes(data))
+        if isinstance(data, (bytes, bytearray)):
+            (req_dir / "request.bin").write_bytes(bytes(data))
+        else:
+            shutil.copyfile(data, req_dir / "request.bin")
         (req_dir / "response.zip").write_bytes(zip_bytes)
         with zipfile.ZipFile(io.BytesIO(zip_bytes)) as zf:
             for info in zf.infolist():
@@ -406,7 +412,7 @@ def parse_to_files(
 
 
 def parse_to_zip(
-    data: bytes,
+    data: "bytes | bytearray | str | Path",
     filename: Optional[str] = None,
     *,
     image_dir_name: str = "images",
@@ -415,7 +421,50 @@ def parse_to_zip(
     save_dir: Optional[str] = None,
     timer: Optional[StageTimer] = None,
 ) -> bytes:
-    """zip 模式：解析 data，返回 zip 字节流（根目录 result.md + images/）。
+    """zip 模式（内存版）：见 :func:`parse_to_zip_file`。返回完整 zip 字节。"""
+    return _parse_to_zip(
+        data, filename,
+        image_dir_name=image_dir_name, demote=demote, source_type=source_type,
+        save_dir=save_dir, timer=timer, out_path=None,
+    )
+
+
+def parse_to_zip_file(
+    data: "bytes | bytearray | str | Path",
+    filename: Optional[str] = None,
+    *,
+    out_path: "str | Path",
+    image_dir_name: str = "images",
+    demote: bool = False,
+    source_type: Any = None,  # noqa: F821
+    save_dir: Optional[str] = None,
+    timer: Optional[StageTimer] = None,
+) -> Path:
+    """zip 模式（落盘版，issues7 S-1）：zip 直写 out_path，不整包驻留内存。
+
+    data 可为 bytes（兼容）或路径（api 层把上传流式落盘后传路径——上传侧同样不整读）。
+    返回 out_path。出参 zip 内容与 :func:`parse_to_zip` 逐字节一致。
+    """
+    _parse_to_zip(
+        data, filename,
+        image_dir_name=image_dir_name, demote=demote, source_type=source_type,
+        save_dir=save_dir, timer=timer, out_path=Path(out_path),
+    )
+    return Path(out_path)
+
+
+def _parse_to_zip(
+    data: "bytes | bytearray | str | Path",
+    filename: Optional[str] = None,
+    *,
+    image_dir_name: str = "images",
+    demote: bool = False,
+    source_type: Any = None,  # noqa: F821
+    save_dir: Optional[str] = None,
+    timer: Optional[StageTimer] = None,
+    out_path: Optional[Path] = None,
+) -> Optional[bytes]:
+    """zip 模式核心（out_path=None → 返回 zip 字节；给定 → 直写文件并返回 None）。
 
     save_dir 非空时落盘留痕（request.bin + response.zip + 解包产物），失败仅告警。
     老格式（.doc/.rtf/... 后缀直转，或解析失败后指纹兜底）先归一化为 docx/pdf。
@@ -423,7 +472,10 @@ def parse_to_zip(
     """
     from document2chunk.api import _route_source_type
 
-    timer = timer or StageTimer(file=filename, size_bytes=len(data), mode="zip", demote=demote)
+    size_bytes = (
+        os.path.getsize(data) if isinstance(data, (str, Path)) else len(data)
+    )
+    timer = timer or StageTimer(file=filename, size_bytes=size_bytes, mode="zip", demote=demote)
     token = set_current_timer(timer)
 
     try:
@@ -431,8 +483,9 @@ def parse_to_zip(
 
         if _is_md_name(name):
             # .md 早退：解码→标题复原→UTF-8 无 BOM 打包；解码失败回退原始字节直通
-            text = _decode_text(source)
-            out = _restore_text(text, name).encode("utf-8") if text is not None else source
+            src_bytes = source if isinstance(source, (bytes, bytearray)) else Path(source).read_bytes()
+            text = _decode_text(src_bytes)
+            out = _restore_text(text, name).encode("utf-8") if text is not None else src_bytes
             buf = io.BytesIO()
             with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
                 zf.writestr("result.md", out)
@@ -440,17 +493,24 @@ def parse_to_zip(
             if save_dir:
                 _save_zip_artifacts(save_dir, name, data, zip_bytes)
             timer.finish("passthrough")
+            if out_path is not None:
+                out_path.write_bytes(zip_bytes)
+                return None
             return zip_bytes
 
         if _is_txt_name(name):
             # .txt 转录：不进 extractor/postprocess，转 UTF-8 无 BOM + 标题复原后打包
+            src_bytes = source if isinstance(source, (bytes, bytearray)) else Path(source).read_bytes()
             buf = io.BytesIO()
             with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
-                zf.writestr("result.md", _txt_to_utf8(source))
+                zf.writestr("result.md", _txt_to_utf8(src_bytes))
             zip_bytes = buf.getvalue()
             if save_dir:
                 _save_zip_artifacts(save_dir, name, data, zip_bytes)
             timer.finish("passthrough")
+            if out_path is not None:
+                out_path.write_bytes(zip_bytes)
+                return None
             return zip_bytes
 
         tmp = Path(tempfile.mkdtemp(prefix="d2c_zip_"))
@@ -478,29 +538,51 @@ def parse_to_zip(
                     md = _doc_markdown(doc)
 
                 with timer.stage("pack"):
-                    buf = io.BytesIO()
-                    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+                    def _write_zip_members(zf) -> None:
                         zf.writestr("result.md", md)
                         if image_dir.exists():
                             for img in sorted(image_dir.rglob("*")):
                                 if img.is_file():
                                     arc = img.relative_to(tmp).as_posix()  # images/xxx.png
                                     zf.write(img, arc)
-                    zip_bytes = buf.getvalue()
-                    if save_dir:
-                        # 留痕收「请求原件」：request.bin 用收到的原始 data（非转换产物）
-                        _save_zip_artifacts(save_dir, name, data, zip_bytes)
+
+                    if out_path is not None:
+                        # 落盘版（S-1）：zip 直写文件，响应不再整包驻留内存；
+                        # zip_bytes 保持 None，timer.finish/返回统一走下方收口
+                        with open(out_path, "wb") as f, zipfile.ZipFile(
+                            f, "w", zipfile.ZIP_DEFLATED
+                        ) as zf:
+                            _write_zip_members(zf)
+                        if save_dir:
+                            # 留痕需要 zip 字节（可选功能），从落盘文件读回一份
+                            _save_zip_artifacts(save_dir, name, data, out_path.read_bytes())
+                        return None  # zip 已直写 out_path
+                    else:
+                        buf = io.BytesIO()
+                        with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+                            _write_zip_members(zf)
+                        zip_bytes = buf.getvalue()
+                        if save_dir:
+                            # 留痕收「请求原件」：request.bin 用收到的原始 data（非转换产物）
+                            _save_zip_artifacts(save_dir, name, data, zip_bytes)
                 return zip_bytes
 
             try:
                 zip_bytes = _run(source)
             except _FORMAT_EXC_TYPES as exc:
-                # 指纹兜底：打开/解包期失败 → 按内容识别归一化（转换/归位/400）后重跑
+                # 指纹兜底：打开/解包期失败 → 按内容识别归一化（转换/归位/400）后重跑。
+                # 门控（issues7 S-5a，与 parse_to_files 一致）：内容可解析直接重抛
                 raw = source if isinstance(source, (bytes, bytearray)) else Path(source).read_bytes()
+                from document2chunk.format_detect import FileKind, identify
+
+                if identify(raw).kind in (FileKind.DOCX, FileKind.PDF, FileKind.IMAGE):
+                    raise
                 with timer.stage("normalize"):
                     source, name = _normalize_legacy(raw, name, exc_prefix=str(exc))
                 zip_bytes = _run(source)
             timer.finish("ok")
+            if out_path is not None:
+                return None  # zip 已直写 out_path
             return zip_bytes
         finally:
             shutil.rmtree(tmp, ignore_errors=True)

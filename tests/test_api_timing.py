@@ -32,15 +32,19 @@ def timing_dir(tmp_path, monkeypatch):
 
 
 def _fake_parse_to_zip(monkeypatch, captured):
+    from pathlib import Path
+
     def fake(data, filename=None, **kw):
         captured["timer"] = kw.get("timer")
         captured["filename"] = filename
         buf = io.BytesIO()
         with zipfile.ZipFile(buf, "w") as z:
             z.writestr("result.md", "# hi\n")
-        return buf.getvalue()
+        out = Path(kw["out_path"])
+        out.write_bytes(buf.getvalue())
+        return out
 
-    monkeypatch.setattr(serve, "parse_to_zip", fake)
+    monkeypatch.setattr(serve, "parse_to_zip_file", fake)
 
 
 def test_zip_arrive_and_timer_passthrough(client, timing_dir, caplog, monkeypatch):
@@ -75,7 +79,7 @@ def test_serve_error_finished_as_error(client, timing_dir, monkeypatch):
     def boom(data, filename=None, **kw):
         raise ValueError("x")
 
-    monkeypatch.setattr(serve, "parse_to_zip", boom)
+    monkeypatch.setattr(serve, "parse_to_zip_file", boom)
     resp = client.post(
         "/parse-pdf", files={"file": ("x.pdf", b"%PDF-fake", "application/pdf")}
     )

@@ -39,6 +39,14 @@ _PARSE_CONCURRENCY = max(1, int(os.environ.get("DOCUMENT2CHUNK_PARSE_CONCURRENCY
 _parse_slots = threading.BoundedSemaphore(_PARSE_CONCURRENCY)
 
 
+def _unlink_quiet(path) -> None:
+    """安静删文件（FileResponse BackgroundTask 用），失败不抛。"""
+    try:
+        os.unlink(path)
+    except OSError:
+        pass
+
+
 def _strip_bytes_fields(node) -> None:
     """递归剔除序列化树中的 bytes 字段（O-1，issues7）。
 
@@ -453,32 +461,62 @@ def create_app():
                 raise HTTPException(status_code=500, detail=f"{type(exc).__name__}: {exc}") from exc
             return {"status": "ok"}
 
-        # zip 模式
+        # zip 模式（S-1）：上传流式落盘 + zip 直写文件 + FileResponse 流式回传——
+        # 请求与响应两端都不再整包驻留内存（143MB 级文档不再放大内存峰值）
         upload = form.get("file") or form.get("document")
         if upload is None:
             raise HTTPException(status_code=400, detail="zip 模式缺少 file 字段")
-        data = await upload.read()
         filename = getattr(upload, "filename", None)
-        timer = StageTimer(file=filename, size_bytes=len(data), mode="zip", demote=demote)
-        log_arrive(
-            request_id=timer.request_id, file=filename,
-            size_bytes=len(data), mode="zip", from_ip=from_ip,
-        )
-        # 输出落盘留痕（线上排查用）：DOCUMENT2CHUNK_SAVE_OUTPUT_DIR 未设置则 None、零行为变化
-        save_dir = os.environ.get("DOCUMENT2CHUNK_SAVE_OUTPUT_DIR") or None
+        import tempfile
+        from pathlib import Path as _Path
+
+        suffix = _Path(filename or "").suffix or ".bin"
+        in_fd, in_path = tempfile.mkstemp(prefix="d2c_up_", suffix=suffix)
+        os.close(in_fd)
+        out_fd, out_path = tempfile.mkstemp(prefix="d2c_resp_", suffix=".zip")
+        os.close(out_fd)
         try:
-            zip_bytes = await _run_parse_sync(
-                serve.parse_to_zip,
-                data, filename, demote=demote, save_dir=save_dir, timer=timer,
+            size_bytes = 0
+            with open(in_path, "wb") as f:
+                while True:
+                    chunk = await upload.read(1 << 20)  # 1MB 分块，内存有界
+                    if not chunk:
+                        break
+                    size_bytes += len(chunk)
+                    f.write(chunk)
+            timer = StageTimer(file=filename, size_bytes=size_bytes, mode="zip", demote=demote)
+            log_arrive(
+                request_id=timer.request_id, file=filename,
+                size_bytes=size_bytes, mode="zip", from_ip=from_ip,
             )
-        except Document2ChunkError as exc:
-            timer.finish("error", error_type=type(exc).__name__)  # 幂等，serve 已 finish 则 no-op
-            raise  # UnsupportedFormat→400 / MissingDependency→503 / 其他→422（注册的 handler）
-        except Exception as exc:  # noqa: BLE001
-            timer.finish("error", error_type=type(exc).__name__)  # 幂等，serve 已 finish 则 no-op
-            raise HTTPException(status_code=500, detail=f"{type(exc).__name__}: {exc}") from exc
-        from fastapi.responses import Response
-        return Response(content=zip_bytes, media_type="application/zip")
+            # 输出落盘留痕（线上排查用）：DOCUMENT2CHUNK_SAVE_OUTPUT_DIR 未设置则 None、零行为变化
+            save_dir = os.environ.get("DOCUMENT2CHUNK_SAVE_OUTPUT_DIR") or None
+            try:
+                await _run_parse_sync(
+                    serve.parse_to_zip_file,
+                    in_path, filename,
+                    out_path=out_path, demote=demote, save_dir=save_dir, timer=timer,
+                )
+            except Document2ChunkError as exc:
+                timer.finish("error", error_type=type(exc).__name__)  # 幂等，serve 已 finish 则 no-op
+                raise  # UnsupportedFormat→400 / MissingDependency→503 / 其他→422（注册的 handler）
+            except Exception as exc:  # noqa: BLE001
+                timer.finish("error", error_type=type(exc).__name__)  # 幂等，serve 已 finish 则 no-op
+                raise HTTPException(status_code=500, detail=f"{type(exc).__name__}: {exc}") from exc
+        finally:
+            try:
+                os.unlink(in_path)
+            except OSError:
+                pass
+        from fastapi.responses import FileResponse
+        from starlette.background import BackgroundTask
+
+        return FileResponse(
+            out_path,
+            media_type="application/zip",
+            filename="result.zip",
+            background=BackgroundTask(_unlink_quiet, out_path),  # 响应发完后清理
+        )
 
     # /parse → 代理到 mineru2doc 适配器（MinerU 引擎，:9300）
     # /parse-pdf → d2c 引擎（_chai_parse）。两路径同 Chai 契约，不同引擎。
