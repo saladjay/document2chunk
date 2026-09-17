@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import time
 from pathlib import Path
 from typing import Optional
 
+from document2chunk import timing
 from document2chunk.extractors.ocr._chunker import iter_pages, page_count
 from document2chunk.extractors.ocr._client import OcrServiceClient
 from document2chunk.extractors.ocr._config import OcrConfig
@@ -82,7 +84,11 @@ class OcrExtractor:
 
         for page_index, media, fname, pw, ph in iter_pages(data, source_file or "source"):
             page_geometry[page_index] = (pw, ph)
+            _t0 = time.perf_counter()
             resp = self._client.parse(media, fname, model=model)
+            _timer = timing.get_current_timer()
+            if _timer is not None:
+                _timer.ocr_page(page_index + 1, time.perf_counter() - _t0, pcount)
             if dump_dir:
                 _dump_response(dump_dir, page_index, resp)
             lp_list = resp.get("layoutParsingResults") or []
