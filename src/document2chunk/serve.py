@@ -267,6 +267,13 @@ def _extract_with_images(source, st: SourceType, image_dir: Optional[str]):
         from document2chunk.extractors.docx import DocxExtractor
         return DocxExtractor().extract(source, image_dir=image_dir)
     from document2chunk.extractors.pdf import PdfExtractor
+    # 毒 PDF 完整防线（issues7 S-2）：提取整体子进程化，楔死在子进程被超时 SIGKILL，
+    # 服务存活。env DOCUMENT2CHUNK_EXTRACT_TIMEOUT 默认 600s，0=退回进程内直提。
+    timeout = float(os.environ.get("DOCUMENT2CHUNK_EXTRACT_TIMEOUT", "600") or "0")
+    if timeout > 0:
+        from document2chunk.pipeline.pdf_extract_worker import extract_pdf_guarded
+
+        return extract_pdf_guarded(source, image_dir, timeout, skip_detect=True)
     # 路由层 _route_source_type 已用同一确定性判定器（pipeline.pdf_detect）确认 editable，
     # 提取器内第二次全文档检测是纯冗余（等价性论证见 docs/大文件提效调研.md §7 序2），
     # 这里跳过；库默认值仍为 False，直接用 PdfExtractor 的调用方行为不变。

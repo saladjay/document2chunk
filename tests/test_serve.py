@@ -317,6 +317,9 @@ def test_error_records_partial_stages(timing_dir, monkeypatch):
 
     from document2chunk.extractors.pdf import PdfExtractor
 
+    # 本测验证"进程内提取报错→timer 记部分阶段"：关掉 S-2 子进程看门狗走直提
+    monkeypatch.setenv("DOCUMENT2CHUNK_EXTRACT_TIMEOUT", "0")
+
     def _boom(self, source, **kw):  # noqa: ANN001
         raise RuntimeError("boom")
 
