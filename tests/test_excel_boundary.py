@@ -56,3 +56,30 @@ def test_red_whitespace_only_cell_is_blank():
 
     g = _grid([["甲", 1], ["  ", None], ["乙", 2]])
     assert len(split_regions(g)) == 2
+
+
+def test_guard_shredded_records_merged_back():
+    """112 实测回归（2.1-2022初步评审）：记录=数据行+备注行+全空行，34 片被误切。
+    修正规则②：链长 >=3（恰好隔 1 空行 + 列跨度重叠）回并为一张表。"""
+    from document2chunk.extractors.excel.boundary import split_regions
+    from document2chunk.extractors.excel.reader import read_sheet_grids
+
+    rows = [
+        ["序号", "课题", "评分"],
+        [1, "甲", 5], [None, None, "备注A"], [],   # 项目1
+        [2, "乙", 6], [None, None, "备注B"], [],   # 项目2
+        [3, "丙"], [],                              # 项目3（缺评分→行内列碎片）
+        [4, "丁", 7], [None, None, "备注C"], [],    # 项目4
+    ]
+    grids, _ = read_sheet_grids(build_xlsx({"s": rows}))
+    regions = split_regions(grids[0])
+    assert len(regions) == 1
+    assert (regions[0].r1, regions[0].c1, regions[0].r2, regions[0].c2) == (0, 0, 10, 2)
+
+
+def test_guard_chain_of_two_stays_split():
+    """链长 2（两张独立表仅隔 1 空行）保持分离——结构不可区分，保守不合并。"""
+    from document2chunk.extractors.excel.boundary import split_regions
+
+    g = _grid([["甲", 1], [None, None], ["乙", 2]])
+    assert len(split_regions(g)) == 2

@@ -11,7 +11,6 @@ from document2chunk.extractors.excel.models import Region, SheetGrid, SheetRoute
 MAX_HEADER_ROWS = 5
 _DOC_MAX_COLS = 2
 _DOC_MIN_LONG = 20
-_FORM_BANNER_RATIO = 0.5  # ≥50% 宽合并视为分组/横幅（降自 0.8，捕获多级分组表头）
 
 
 def _nonempty(cells: list[object]) -> list[object]:
@@ -54,17 +53,11 @@ def classify_region(grid: SheetGrid, region: Region, header_rows: int) -> SheetR
     if data_r1 > region.r2:
         return SheetRoute.DATA_TABLE  # 只有表头区：按数据表输出（无数据行则产 0 行）
 
-    # 表单式：表头区上方有横向大合并抬头（决算表/签字名单）
-    wide_merges = [
-        (r1, c1, r2, c2) for r1, c1, r2, c2 in grid.merged
-        if region.r1 <= r1 and r2 < data_r1 and (c2 - c1 + 1) >= max(2, width * _FORM_BANNER_RATIO)
-    ]
-    if wide_merges:
-        # 多级分组表头 vs 表单 banner：若宽合并出现在 ≥2 个不同行 → 多级分组 → DATA_TABLE
-        # （banner 型表单只有一行宽合并；多级表头每层都有宽合并）
-        distinct_rows = {r1 for r1, c1, r2, c2 in wide_merges}
-        if len(distinct_rows) < 2:
-            return SheetRoute.FORM_SHEET
+    # 表单式路线（FORM_SHEET）休眠：112 实测（2026-09-20）真实语料中所有"表单式外观"
+    # 的 sheet（评审人员分/经费决算表/边坡巡查）行均为有效记录，且任何"横幅→表单"
+    # 几何判据都会把带标题/分组表头的数据表整表聚合成 1 个块（99/230 行丢失，灾难性）。
+    # 故不再触发 FORM；带标题的表按标题作为表头路径第一级输出，行级自包含优先（Q4）。
+    # Q19 决策偏离已在 112 测试报告中标注，待人工追认。
 
     # 文档型：≤2 列 + 数据全字符串 + 含长文本（FAQ/政策汇编）
     data_values: list[object] = []

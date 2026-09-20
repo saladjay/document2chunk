@@ -62,11 +62,12 @@ def test_red_all_string_many_cols_stays_data_table():
     assert classify_region(g, region, h) is SheetRoute.DATA_TABLE
 
 
-def test_red_form_sheet_by_wide_banner_merge():
+def test_red_pure_title_banner_is_data_table():
     from document2chunk.extractors.excel.header import classify_region, detect_header_rows
     from document2chunk.extractors.excel.models import SheetRoute
 
-    # 决算表型：顶部横向大合并抬头 + 表头 + 数据
+    # 112 实测修正：纯通栏标题（行内无合并外内容）只是标题层级，不构成表单证据——
+    # 否则带标题的数据表整表被聚合成 1 个块（2.1-2022初步评审 99 行丢失事故）
     g = _grid(
         [
             ["2024年度研发经费决算表", None, None],
@@ -78,7 +79,30 @@ def test_red_form_sheet_by_wide_banner_merge():
     )
     region = _full(g)
     h = detect_header_rows(g, region)
-    assert classify_region(g, region, h) is SheetRoute.FORM_SHEET
+    assert h == 2  # 标题行 + 表头行（数据行出现类型对比）
+    assert classify_region(g, region, h) is SheetRoute.DATA_TABLE
+
+
+def test_red_label_plus_banner_is_data_table():
+    from document2chunk.extractors.excel.header import classify_region, detect_header_rows
+    from document2chunk.extractors.excel.models import SheetRoute
+
+    # 评审人员分型（112 实测回归）：标签格+通栏标题，行均为评分记录 → 数据表（Q19 偏离，见 112 报告）
+    g = _grid(
+        [
+            ["评审", "2022年下半年集团审批类项目初步评审", None, None],
+            [None, "序号", "课题名称", "评分"],
+            [None, None, None, None],
+            ["何志军", 18, "北江特大桥索塔群桩基础研究", 92],
+            [None, None, None, None],
+            ["雷鸣", 27, "桥梁工程研究", 88],
+        ],
+        merges=("B1:D1",),
+    )
+    region = _full(g)
+    h = detect_header_rows(g, region)
+    assert h == 2
+    assert classify_region(g, region, h) is SheetRoute.DATA_TABLE
 
 
 def test_red_header_cap_at_five():
