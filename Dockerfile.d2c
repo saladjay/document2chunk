@@ -13,7 +13,7 @@ RUN if [ -n "$APT_MIRROR" ]; then \
     fi \
     && apt-get update && apt-get install -y --no-install-recommends \
     libglib2.0-0 libsm6 libxrender1 libxext6 libgl1 \
-    libreoffice-core libreoffice-writer libreoffice-impress \
+    libreoffice-core libreoffice-writer libreoffice-impress libreoffice-calc \
     fonts-noto-cjk \
     && rm -rf /var/lib/apt/lists/*
 
@@ -32,7 +32,8 @@ ENV DOCUMENT2CHUNK_OCR_ENDPOINT=http://host.docker.internal:8000 \
     DOCUMENT2CHUNK_OCR_TIMEOUT=300 \
     PYTHONUNBUFFERED=1
 
-# 老格式归一化：doc/rtf/wps 先经 soffice 转 docx（默认；可切 pdf），ppt/pptx 转 pdf
+# 老格式归一化：doc/rtf/wps 先经 soffice 转 docx（默认；可切 pdf），ppt/pptx 转 pdf；
+# 2026-09-20 补 libreoffice-calc——Excel 链路（.xls/.et/假.xlsx → soffice 转 xlsx）无 Calc 滤镜必败
 ENV DOCUMENT2CHUNK_DOC_TARGET=docx \
     DOCUMENT2CHUNK_SOFFICE_TIMEOUT=120
 
