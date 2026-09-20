@@ -411,7 +411,7 @@ def create_app():
         return {"status": "ok", "version": __version__}
 
     async def _chai_parse(request: Request):
-        """Chai 对接契约（/parse 与 /parse-pdf 共用，与 mineru2doc :9300/parse 一致）：
+        """Chai 对接契约（/parse、/parse-pdf 与 /parse-doc 共用，与 mineru2doc :9300/parse 一致）：
         路径模式(file_path/output_dir/image_dir)→写 result.md+images，返回 {status:ok}；
         zip 模式(文件二进制)→返回 zip 流(result.md+images/)。可选 demote。
         可观测性：ARRIVE 行（文件名/大小/来源IP）+ StageTimer 全程计时。"""
@@ -548,6 +548,11 @@ def create_app():
 
     @app.post("/parse-pdf")
     async def parse_pdf(request: Request):
+        return await _chai_parse(request)
+
+    @app.post("/parse-doc")
+    async def parse_doc(request: Request):
+        """/parse-pdf 的别名(2026-09-20 新增)：同一 handler、同一契约、同一行为。"""
         return await _chai_parse(request)
 
     # 库 API（旧 /parse 行为）：上传文件 → {document IR, markdown}
