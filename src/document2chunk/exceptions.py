@@ -35,3 +35,7 @@ class PipelineError(Document2ChunkError):
 # 历史别名：与 MissingDependencyError 同义（① 早期命名），保留向后兼容。
 OptionalDependencyError = MissingDependencyError
 
+
+class ExcelParseError(Document2ChunkError):
+    """Excel 解析失败（422）。"""
+

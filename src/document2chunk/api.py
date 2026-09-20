@@ -555,6 +555,28 @@ def create_app():
         """/parse-pdf 的别名(2026-09-20 新增)：同一 handler、同一契约、同一行为。"""
         return await _chai_parse(request)
 
+    @app.post("/parse-excel")
+    async def parse_excel(request: Request) -> JSONResponse:
+        """Excel/csv → 行级 JSON envelope（轨 A: chunk2embedding）。"""
+        from document2chunk import serve as serve_mod
+
+        form = await request.form()
+        upload = form.get("file")
+        if upload is not None:
+            data = await upload.read()
+            name = getattr(upload, "filename", None) or "upload.xlsx"
+        else:
+            file_path = form.get("file_path")
+            if not file_path:
+                raise HTTPException(status_code=400, detail="需要 multipart 字段 file 或 file_path")
+            p = Path(str(file_path))
+            if not p.is_file():
+                raise HTTPException(status_code=400, detail=f"文件不存在: {file_path}")
+            data = p.read_bytes()
+            name = p.name
+        envelope = await _run_parse_sync(serve_mod.parse_excel_to_envelope, data, name)
+        return JSONResponse(envelope)
+
     # 库 API（旧 /parse 行为）：上传文件 → {document IR, markdown}
     @app.post("/parse-json")
     async def parse_json(

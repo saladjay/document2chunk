@@ -27,7 +27,7 @@ from typing import Any, Optional, Union
 
 from document2chunk.api import _assemble, _source_name
 from document2chunk.timing import StageTimer, reset_current_timer, set_current_timer
-from document2chunk.exceptions import Document2ChunkError, UnsupportedFormatError
+from document2chunk.exceptions import Document2ChunkError, MissingDependencyError, UnsupportedFormatError
 from document2chunk.ir import (
     DocumentMetadata,
     ImageNode,
@@ -184,8 +184,7 @@ def _doc_target_ext() -> str:
 
 def _xls_err(name: Optional[str], kind: str) -> UnsupportedFormatError:
     return UnsupportedFormatError(
-        f"检测到表格格式（{kind}）：{name or '(未命名)'}——即将支持；"
-        "请先导出为 PDF/docx 后上传"
+        f"检测到表格格式（{kind}）：{name or '(未命名)'}——请改用 /parse-excel 接口解析表格文件"
     )
 
 
@@ -220,6 +219,39 @@ def _normalize_legacy(data: bytes, name: Optional[str], *, exc_prefix: str = "")
         return data, name or (f"input{d.ext}" if d.ext else "input.bin")
     product = _legacy_convert(data, d.ext, target, name)
     return product, (Path(name or "f").stem + target)
+
+
+def parse_excel_to_envelope(data: bytes, name: str = "") -> dict:
+    """Excel/csv 统一入口：指纹路由 + 老格式 soffice 归一化 + 行级 envelope。
+
+    - 扩展名 .csv → csv 轻量路径；
+    - XLS 指纹（含 .xls 冒充 .xlsx 的假扩展名）→ soffice 转 xlsx（难点19）；
+    - .et 非 xlsx 内容 → soffice 转 xlsx；
+    - 其余非 XLSX 内容 → UnsupportedFormatError（chai 层 400）。
+    """
+    try:
+        from document2chunk.extractors.excel.csv_reader import parse_csv_bytes
+        from document2chunk.extractors.excel.parser import parse_excel_bytes
+        from document2chunk.extractors.excel.serializer import to_envelope
+    except ImportError as exc:  # excel extra 未安装
+        raise MissingDependencyError(f"excel 解析依赖未安装：pip install '.[excel]'（{exc}）") from exc
+
+    from document2chunk.format_detect import FileKind, identify
+
+    ext = os.path.splitext(name)[1].lower()
+    if ext == ".csv":
+        return to_envelope(parse_csv_bytes(data, name))
+
+    kind = identify(data).kind
+    if ext == ".et" and kind is not FileKind.XLSX:
+        data = _legacy_convert(data, "et", "xlsx", name=name)
+    elif kind is FileKind.XLS:
+        data = _legacy_convert(data, "xls", "xlsx", name=name)
+    elif kind is not FileKind.XLSX:
+        raise UnsupportedFormatError(
+            f"不支持的内容类型 {kind}（ext={ext or '未知'}）：{name or '未命名'}"
+        )
+    return to_envelope(parse_excel_bytes(data, name))
 
 
 def _needs_legacy(name: Optional[str]) -> bool:

@@ -101,14 +101,14 @@ def test_xlsx_suffix_400_with_name():
     with pytest.raises(UnsupportedFormatError) as ei:
         serve.parse_to_zip(_minimal_zip(["xl/workbook.xml"]), "表.xlsx")
     assert "表.xlsx" in str(ei.value)
-    assert "即将支持" in str(ei.value)
+    assert "/parse-excel" in str(ei.value)
 
 
 def test_xls_by_fingerprint_400():
-    """无后缀裸 OLE2-xls bytes → 规则层命中 XLS → 400 即将支持（规则层命中不走 magika）。"""
+    """无后缀裸 OLE2-xls bytes → 规则层命中 XLS → 400 指向 /parse-excel（规则层命中不走 magika）。"""
     with pytest.raises(UnsupportedFormatError) as ei:
         serve.parse_to_zip(_fake_ole2("Workbook"))
-    assert "即将支持" in str(ei.value)
+    assert "/parse-excel" in str(ei.value)
 
 
 def test_unknown_bytes_error_has_filename_and_diagnosis():

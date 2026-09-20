@@ -24,7 +24,7 @@ RUN mkdir -p openspec && printf '# document2chunk\n' > openspec/project.md
 
 # 安装（全部 extras：pdf/ocr/docx/api/viz/legacy）；PIP_INDEX_URL 同理走国内镜像
 ARG PIP_INDEX_URL=https://pypi.org/simple
-RUN pip install --no-cache-dir -i ${PIP_INDEX_URL} ".[pdf,ocr,docx,api,viz,legacy]"
+RUN pip install --no-cache-dir -i ${PIP_INDEX_URL} ".[pdf,ocr,docx,api,viz,legacy,excel]"
 
 # OCR 服务配置（宿主 PaddleOCR :8000；token 部署时注入）
 ENV DOCUMENT2CHUNK_OCR_ENDPOINT=http://host.docker.internal:8000 \

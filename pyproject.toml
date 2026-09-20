@@ -21,6 +21,7 @@ docx = ["lxml>=4.9.0"]
 legacy = ["olefile>=0.46", "magika>=1.0.3"]
 api = ["fastapi>=0.100.0", "uvicorn>=0.20.0", "python-multipart>=0.0.6"]
 viz = ["Pillow>=9.0.0"]
+excel = ["python-calamine>=0.7.0", "openpyxl>=3.1.0"]
 dev = ["pytest>=7.0", "pytest-cov>=4.0"]
 
 [tool.hatch.build.targets.wheel]
