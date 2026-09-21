@@ -345,3 +345,26 @@ def test_p1_header_ratio_boundary_and_url_veto():
     result2 = parse_excel_bytes(data2, "t.xlsx")
     assert len(result2.rows) == 3
     assert all("链接" not in r.data for r in result2.rows)
+
+
+def test_p1_header_single_cell_banner_row_exempt():
+    # 08 号形态：多列区域的首行是单格长标题（未合并、含日期子串）→ 横幅式豁免，
+    # 标题保持键路径一级（基线形态），真表头与数据行不受影响。
+    # 注：标题只占第 1 列，故仅首列键带前缀（与 08 号基线键形态一致），
+    # 其余列键为真表头列名本身。
+    from document2chunk.extractors.excel.parser import parse_excel_bytes
+    from tests._excel_fixtures import build_xlsx
+
+    title = "软弱地层挤扩锚固关键技术研究科研成果入库情况 2023.8.03"
+    data = build_xlsx(
+        {"s": [
+            [title, None, None, None],
+            ["序号", "承担单位", "数量", "备注"],
+            [1, "甲单位", 3, "x"],
+            [2, "乙单位", 5, "y"],
+        ]}
+    )
+    result = parse_excel_bytes(data, "t.xlsx")
+    assert len(result.rows) == 2
+    assert set(result.rows[0].data) == {f"{title}-序号", "承担单位", "数量", "备注"}
+    assert result.rows[0].data[f"{title}-序号"] == 1   # 数据行照常产出

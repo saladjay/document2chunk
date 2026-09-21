@@ -9,6 +9,9 @@
   行内容零丢失（19 号 region2/3 教训）；单行区域不拒升（0 产出由兜底救援）。
 - 宽合并横幅豁免：整行横跨 ≥半宽的合并抬头（标题横幅）不受拒升——112 定稿
   「标题作为表头路径第一级输出」（Q4），拒它会造成全语料大面积回归。
+- 单格横幅豁免（终审 F2 08 号发现）：多列区域中的单格行（未合并的长标题独占行）
+  同样按横幅对待，不受软/硬信号约束——否则 08 号标题行被长句软信号否决，
+  整区退化为无表头，真表头降为数据行（基线形态是标题作键路径一级，OI-9 已知限制）。
 """
 from __future__ import annotations
 
@@ -49,8 +52,6 @@ def _wide_merged_row(grid: SheetGrid, region: Region, r: int) -> bool:
 
 def _row_suspicious(grid: SheetGrid, region: Region, r: int) -> bool:
     """URL/日期形态一票否决；长句须占非空格 ≥_SUSPICIOUS_RATIO（14 号表头含长说明列名，不得误杀）。"""
-    if _wide_merged_row(grid, region, r):
-        return False
     cells = [
         v
         for v in _row_values(grid, r, region.c1, region.c2)
@@ -58,6 +59,10 @@ def _row_suspicious(grid: SheetGrid, region: Region, r: int) -> bool:
     ]
     if not cells:
         return False
+    if _wide_merged_row(grid, region, r):
+        return False
+    if len(cells) == 1 and (region.c2 - region.c1 + 1) >= 2:
+        return False  # 多列区域中的单格行＝横幅式标题（08 号），不受软/硬信号约束
     if any(
         isinstance(v, str) and (_URL.search(v) or _DATEY.match(v.strip())) for v in cells
     ):
