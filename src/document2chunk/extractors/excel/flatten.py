@@ -56,7 +56,7 @@ def flatten_header(grid: SheetGrid, region: Region, header_rows: int) -> dict[in
 def fill_region_values(
     grid: SheetGrid, region: Region, header_rows: int
 ) -> list[dict[int, object]]:
-    """数据区逐行 → {列号: 原始值}。合并单元格值下放每行（Q4）；空值不入场。"""
+    """数据区逐行 → {列号: 原始值}。合并单元格值下放每行（Q4）；空值不入场（错误格除外——回填错误字面量，Q5 a3）。"""
     origin = build_merge_origin(grid)
     out: list[dict[int, object]] = []
     for r in range(region.r1 + header_rows, region.r2 + 1):

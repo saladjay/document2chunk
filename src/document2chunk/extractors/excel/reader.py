@@ -1,7 +1,7 @@
 """读取层：python-calamine 读值（快）+ openpyxl 二遍读格式（准）。
 
 - calamine `skip_empty_area=True` 天然给出"实际扫描值域"（定档 #5：不信声明 dimension）。
-- openpyxl 二遍只取：合并 ranges、数字格式、加粗、outline、隐藏行列、无缓存公式坐标。
+- openpyxl 二遍只取：合并 ranges、数字格式、加粗、outline、隐藏行列、无缓存公式坐标、错误字面量坐标。
 - 单元格数超 `_OPENPYXL_CELL_LIMIT` 时跳过二遍（性能护栏，定档 #18），并记 warning。
 """
 from __future__ import annotations
