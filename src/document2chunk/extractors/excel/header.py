@@ -3,12 +3,21 @@
 - 表头 = 顶部连续全字符串行（AAAI 类型同质性），上限 5（真实语料最多 3 级）。
 - 下方无类型对比（全表皆字符串）时表头封顶 1 行——防吞纯文本数据区（盘点修正③）。
 - 分流：文档型（≤2 列全字符串含长文本）、表单式（表头区上方有 ≥80% 宽的横向大合并抬头）。
+- 拒升（2026-09-21 grill P1）：候选表头行含 URL/≥30 字长句/纯日期形态 → 不作表头；
+  首行即被拒升 → 整区按无表头输出（keys=列N），行内容零丢失（19 号 region2/3 教训）。
+- 宽合并横幅豁免：整行横跨 ≥半宽的合并抬头（标题横幅）不受拒升——112 定稿
+  「标题作为表头路径第一级输出」（Q4），拒它会造成全语料大面积回归。
 """
 from __future__ import annotations
+
+import re
 
 from document2chunk.extractors.excel.models import Region, SheetGrid, SheetRoute
 
 MAX_HEADER_ROWS = 5
+_URL = re.compile(r"https?://|www\.", re.IGNORECASE)
+_DATEY = re.compile(r"^\d{4}[-/.年]\d{1,2}([-/.月]\d{1,2}日?)?$")
+_SUSPICIOUS_LEN = 30
 _DOC_MAX_COLS = 2
 _DOC_MIN_LONG = 20
 
@@ -27,15 +36,50 @@ def _all_string(cells: list[object]) -> bool:
     return bool(ne) and all(isinstance(v, str) for v in ne)
 
 
+def _suspicious_cell(v: object) -> bool:
+    """URL / ≥30 字长句 / 纯日期形态的字符串不像列名。"""
+    if not isinstance(v, str):
+        return False
+    s = v.strip()
+    if not s:
+        return False
+    return bool(_URL.search(s)) or len(s) >= _SUSPICIOUS_LEN or bool(_DATEY.match(s))
+
+
+def _wide_merged_row(grid: SheetGrid, region: Region, r: int) -> bool:
+    """该行存在横跨 ≥ 半宽（且 ≥2 列）的合并区 → 标题横幅，豁免拒升。"""
+    half = max(2, (region.c2 - region.c1 + 1) // 2)
+    return any(
+        r1 == r2 == r and (c2 - c1 + 1) >= half for r1, c1, r2, c2 in grid.merged
+    )
+
+
+def _row_suspicious(grid: SheetGrid, region: Region, r: int) -> bool:
+    return not _wide_merged_row(grid, region, r) and any(
+        _suspicious_cell(v) for v in _row_values(grid, r, region.c1, region.c2)
+    )
+
+
 def detect_header_rows(grid: SheetGrid, region: Region) -> int:
     height = region.r2 - region.r1 + 1
+    width = region.c2 - region.c1 + 1
+    # 纯列表：宽 1 且全字符串（如下拉列表源数据）无表头语义，整列皆内容（02 号教训）
+    if width == 1 and all(
+        _all_string(_row_values(grid, r, region.c1, region.c2))
+        for r in range(region.r1, region.r2 + 1)
+    ):
+        return 0
     h = 0
     for r in range(region.r1, region.r1 + min(MAX_HEADER_ROWS, height)):
-        if _all_string(_row_values(grid, r, region.c1, region.c2)):
+        if _all_string(_row_values(grid, r, region.c1, region.c2)) and not _row_suspicious(
+            grid, region, r
+        ):
             h += 1
         else:
             break
     if h == 0:
+        if _row_suspicious(grid, region, region.r1):
+            return 0  # 首行拒升：整区无表头，行内容全保留（keys=列N）
         return 1  # 首行含非字符串：单行表头兜底
     below_mixed = any(
         not _all_string(_row_values(grid, r, region.c1, region.c2))

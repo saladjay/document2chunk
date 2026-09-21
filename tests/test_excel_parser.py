@@ -105,3 +105,49 @@ def test_p1_position_never_alone():
     assert "from_total" not in rows["备注"].meta
     assert "from_total_candidate" not in rows["备注"].meta
     assert not any("疑似合计" in w for w in result.warnings)
+
+
+def test_p1_header_reject_long_text_row():
+    # 19 号 region2/3 场景：首行是长句/URL 数据行 → 整区无表头，行内容全保留
+    from document2chunk.extractors.excel.parser import parse_excel_bytes
+    from tests._excel_fixtures import build_xlsx
+
+    data = build_xlsx(
+        {"s": [
+            ["全省高速公路改扩建工程 2025 年度第三次调度会议纪要纪要纪要纪要", "http://example.com/meeting-2025"],
+            ["会议名称", "参会人数"],
+            ["第一季度调度会", 45],
+        ]}
+    )
+    result = parse_excel_bytes(data, "t.xlsx")
+    assert len(result.rows) == 3                      # 3 行全保留
+    assert all(set(r.data) == {"列1", "列2"} for r in result.rows)  # 无表头 → 列N
+
+
+def test_p1_header_banner_merged_row_exempt():
+    # 横幅豁免：整行宽合并长标题不受拒升约束（既有行为：标题进表头路径第一级）
+    from document2chunk.extractors.excel.parser import parse_excel_bytes
+    from tests._excel_fixtures import build_xlsx
+
+    data = build_xlsx(
+        {"s": [
+            ["XX 项目 R&D 经费决算表（单位：万元）——超长标题用于触发长度阈值判定的测试文本", "", "", ""],
+            ["科目", "数量", "金额", "备注"],
+            ["设备费", 1, 100, "x"],
+        ]},
+        merges=("A1:D1",),
+    )
+    result = parse_excel_bytes(data, "t.xlsx")
+    keys = set().union(*(set(r.data) for r in result.rows))
+    assert any("科目" in k for k in keys)             # 表头路径成立（横幅未被拒升，标题仍为键前缀——112 已知限制）
+    assert not any(k.startswith("列") for k in keys)  # 未退化为无表头
+
+
+def test_p1_pure_list_no_header_promotion():
+    # 02 号 Sheet1 场景：宽 1 纯字符串列无表头语义 → h=0，首项不得提升为键
+    from document2chunk.extractors.excel.parser import parse_excel_bytes
+    from tests._excel_fixtures import build_xlsx
+
+    data = build_xlsx({"列表": [["甲类"], ["乙类"], ["丙类"]]})
+    result = parse_excel_bytes(data, "t.xlsx")
+    assert [r.data["列1"] for r in result.rows] == ["甲类", "乙类", "丙类"]
