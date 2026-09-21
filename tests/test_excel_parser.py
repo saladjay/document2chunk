@@ -60,3 +60,48 @@ def test_red_poison_input_raises_excel_parse_error():
 
     with pytest.raises(ExcelParseError):
         parse_excel_bytes(b"PK\x03\x04 not really a zip", "bad.xlsx")
+
+
+def test_p1_total_layered_definite_and_candidate():
+    from document2chunk.extractors.excel.parser import parse_excel_bytes
+    from tests._excel_fixtures import build_xlsx
+
+    # 小计行(第3行)关键词命中但算术不符且非末行 → candidate；合计行 → definite
+    data = build_xlsx(
+        {"s": [["名称", "数量"], ["甲", 1], ["小计", 5], ["乙", 2], ["合计", 3]]}
+    )
+    result = parse_excel_bytes(data, "t.xlsx")
+    rows = {r.data["名称"]: r for r in result.rows}
+    assert rows["合计"].meta["from_total"] is True
+    assert set(rows["合计"].meta["total_evidence"]) >= {"keyword"}
+    assert "from_total" not in rows["小计"].meta
+    assert rows["小计"].meta["from_total_candidate"] is True
+    assert rows["小计"].meta["total_evidence"] == ["keyword"]
+    assert any("第 3 行疑似合计行" in w for w in result.warnings)
+    assert "from_total" not in rows["甲"].meta and "from_total_candidate" not in rows["甲"].meta
+
+
+def test_p1_total_strict_only_downgrades_to_candidate():
+    # 22 号 R6 场景：无关键词、算术全吻合 → 旧版误标 from_total，新版只准 candidate
+    from document2chunk.extractors.excel.parser import parse_excel_bytes
+    from tests._excel_fixtures import build_xlsx
+
+    data = build_xlsx({"s": [["名称", "数量"], ["甲", 1], ["乙", 3], ["丙", 4]]})
+    result = parse_excel_bytes(data, "t.xlsx")
+    rows = {r.data["名称"]: r for r in result.rows}
+    assert "from_total" not in rows["丙"].meta          # 旧版这里 True
+    assert rows["丙"].meta["from_total_candidate"] is True
+    assert "strict" in rows["丙"].meta["total_evidence"]
+
+
+def test_p1_position_never_alone():
+    # 末行仅位置信号（无关键词、算术不符）→ 两个标都不打，也不产 warning
+    from document2chunk.extractors.excel.parser import parse_excel_bytes
+    from tests._excel_fixtures import build_xlsx
+
+    data = build_xlsx({"s": [["名称", "数量"], ["甲", 1], ["乙", 2], ["备注", 7]]})
+    result = parse_excel_bytes(data, "t.xlsx")
+    rows = {r.data["名称"]: r for r in result.rows}
+    assert "from_total" not in rows["备注"].meta
+    assert "from_total_candidate" not in rows["备注"].meta
+    assert not any("疑似合计" in w for w in result.warnings)

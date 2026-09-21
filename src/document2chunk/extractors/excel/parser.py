@@ -15,7 +15,7 @@ from document2chunk.extractors.excel.models import (
 )
 from document2chunk.extractors.excel.reader import read_sheet_grids
 from document2chunk.extractors.excel.serializer import row_text
-from document2chunk.extractors.excel.totals import mark_total_rows
+from document2chunk.extractors.excel.totals import classify_total_rows, collect_total_signals
 from document2chunk.extractors.excel.values import normalize_value
 
 
@@ -95,7 +95,9 @@ def parse_excel_bytes(data: bytes, name: str = "") -> ExcelParseResult:
                 summary["blocks"] += 1
             else:
                 keys = flatten_header(grid, region, h)
-                marks = mark_total_rows(grid, region, h)
+                definite, candidate = classify_total_rows(
+                    collect_total_signals(grid, region, h)
+                )
                 for i, rec in enumerate(fill_region_values(grid, region, h)):
                     abs_row = region.r1 + h + i
                     data: dict[str, object] = {}
@@ -105,9 +107,16 @@ def parse_excel_bytes(data: bytes, name: str = "") -> ExcelParseResult:
                     if not data:
                         continue
                     meta: dict[str, object] = {"hidden": abs_row in grid.hidden_rows}
-                    if abs_row in marks:
+                    if abs_row in definite:
                         meta["from_total"] = True
-                        meta["total_evidence"] = marks[abs_row]
+                        meta["total_evidence"] = definite[abs_row]
+                    elif abs_row in candidate:
+                        meta["from_total_candidate"] = True
+                        meta["total_evidence"] = candidate[abs_row]
+                        result.warnings.append(
+                            f"sheet「{grid.name}」第 {abs_row + 1} 行疑似合计行"
+                            f"（证据：{'/'.join(candidate[abs_row])}），未打 from_total"
+                        )
                     result.rows.append(
                         RowRecord(
                             sheet=grid.name,
