@@ -21,6 +21,7 @@ class CellFmt:
     number_format: str | None = None
     bold: bool = False
     outline_level: int = 0
+    error: str | None = None
 
 
 @dataclass
@@ -35,6 +36,7 @@ class SheetGrid:
     hidden_rows: set[int] = field(default_factory=set)
     hidden_cols: set[int] = field(default_factory=set)
     formula_no_cache: set[tuple[int, int]] = field(default_factory=set)
+    error_cells: dict[tuple[int, int], str] = field(default_factory=dict)  # 0-based → 错误字面量
     has_external_links: bool = False
     has_pivot: bool = False
 

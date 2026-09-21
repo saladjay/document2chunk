@@ -266,3 +266,30 @@ def test_p1_key_structure_mismatch_warning():
     )
     result = parse_excel_bytes(data, "t.xlsx")
     assert any("表头结构不一致" in w for w in result.warnings)
+
+
+def test_p1_error_literal_data_kept_text_chinese(monkeypatch):
+    import document2chunk.extractors.excel.parser as parser_mod
+    from document2chunk.extractors.excel.models import SheetGrid
+
+    grid = SheetGrid(
+        name="s",
+        values=[["名称", "状态"], ["甲", ""], ["乙", ""]],
+        error_cells={(1, 1): "#N/A", (2, 1): "#DIV/0!"},
+    )
+    monkeypatch.setattr(parser_mod, "read_sheet_grids", lambda data: ([grid], []))
+    result = parser_mod.parse_excel_bytes(b"x", "t.xlsx")
+    assert len(result.rows) == 2
+    assert result.rows[0].data["状态"] == "#N/A"                     # data 保留原文
+    assert "无可用值" in result.rows[0].text and "#N/A" not in result.rows[0].text
+    assert "除零错误" in result.rows[1].text
+    assert any("错误值单元格" in w for w in result.warnings)          # 计数告警
+
+
+def test_p1_error_zh_table():
+    from document2chunk.extractors.excel.values import error_zh
+
+    assert error_zh("#N/A") == "无可用值"
+    assert error_zh(" #N/A ") == "无可用值"
+    assert error_zh("普通文本") == "普通文本"
+    assert error_zh(42) == 42

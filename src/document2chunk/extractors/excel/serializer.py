@@ -2,11 +2,12 @@
 from __future__ import annotations
 
 from document2chunk.extractors.excel.models import ExcelParseResult
+from document2chunk.extractors.excel.values import error_zh
 
 
 def row_text(data: dict[str, object]) -> str:
-    """`"键: 值; "` 平铺；值为 None 的键值对不进 text。"""
-    return "; ".join(f"{k}: {v}" for k, v in data.items() if v is not None)
+    """`"键: 值; "` 平铺；值为 None 不进 text；错误字面量记中文语义（Q5 a3）。"""
+    return "; ".join(f"{k}: {error_zh(v)}" for k, v in data.items() if v is not None)
 
 
 def to_envelope(result: ExcelParseResult) -> dict:

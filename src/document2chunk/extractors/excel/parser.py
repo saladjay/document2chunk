@@ -192,6 +192,19 @@ def parse_excel_bytes(data: bytes, name: str = "") -> ExcelParseResult:
                         f"区域未按表格产出，已兜底为 {len(fallback)} 个文本块"
                     )
 
+        # 错误值单元格按 sheet 计数告警（python-calamine 读为空，openpyxl 二遍才看得到）
+        if grid.error_cells:
+            cnt = sum(
+                1
+                for (r, c) in grid.error_cells
+                if any(rg.r1 <= r <= rg.r2 and rg.c1 <= c <= rg.c2 for rg in regions)
+            )
+            if cnt:
+                result.warnings.append(
+                    f"sheet「{grid.name}」含 {cnt} 个错误值单元格"
+                    f"（data 保留原文，text 记中文语义）"
+                )
+
         # 同 sheet 等宽区域键结构不一致告警（04 号「次表继承首表错误路径」的探测器）
         for (ra, ka), (rb, kb) in zip(dt_regions, dt_regions[1:]):
             if (ra.c2 - ra.c1) == (rb.c2 - rb.c1) and sorted(ka.values()) != sorted(kb.values()):

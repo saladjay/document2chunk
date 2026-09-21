@@ -58,3 +58,21 @@ def normalize_value(value: object, fmt: CellFmt | None = None) -> object:
             return int(value)
         return value
     return str(value)
+
+
+ERROR_ZH: dict[str, str] = {
+    "#N/A": "无可用值",
+    "#DIV/0!": "除零错误",
+    "#VALUE!": "值错误",
+    "#REF!": "引用失效",
+    "#NAME?": "未知名称",
+    "#NUM!": "数值错误",
+    "#NULL!": "空交集",
+}
+
+
+def error_zh(value: object) -> object:
+    """错误字面量 → 中文语义。仅 text 层用；data 层保留原文（Q5 a3，词表终稿见 OI-1）。"""
+    if isinstance(value, str):
+        return ERROR_ZH.get(value.strip(), value)
+    return value

@@ -63,7 +63,11 @@ def fill_region_values(
         rec: dict[int, object] = {}
         for c in range(region.c1, region.c2 + 1):
             v = cell_value(grid, origin, r, c)
-            if v is not None and not (isinstance(v, str) and v.strip() == ""):
-                rec[c] = v
+            if v is None or (isinstance(v, str) and v.strip() == ""):
+                err = grid.error_cells.get((r, c))
+                if err:
+                    rec[c] = err
+                continue
+            rec[c] = v
         out.append(rec)
     return out

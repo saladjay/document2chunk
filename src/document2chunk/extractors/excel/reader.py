@@ -44,9 +44,17 @@ def _read_openpyxl_info(data: bytes, sheet_names: list[str]) -> dict[str, dict]:
         formats: dict[tuple[int, int], CellFmt] = {}
         for row in ws.iter_rows():
             for cell in row:
+                r, c = cell.row - 1, cell.column - 1
+                if cell.data_type == "e":
+                    formats[(r, c)] = CellFmt(
+                        number_format=cell.number_format or "General",
+                        bold=bool(cell.font and cell.font.bold),
+                        outline_level=int(getattr(cell, "outline_level", 0) or 0),
+                        error=str(cell.value),
+                    )
+                    continue
                 if cell.value is None:
                     continue
-                r, c = cell.row - 1, cell.column - 1
                 fmt = cell.number_format or "General"
                 bold = bool(cell.font and cell.font.bold)
                 outline = int(getattr(cell, "outline_level", 0) or 0)
@@ -71,6 +79,7 @@ def _read_openpyxl_info(data: bytes, sheet_names: list[str]) -> dict[str, dict]:
             "hidden_rows": hidden_rows,
             "hidden_cols": hidden_cols,
             "formula_no_cache": formula_no_cache,
+            "error_cells": {rc: f.error for rc, f in formats.items() if f.error},
         }
     return out
 
@@ -119,6 +128,7 @@ def read_sheet_grids(data: bytes) -> tuple[list[SheetGrid], list[str]]:
                 hidden_rows=d.get("hidden_rows", set()),
                 hidden_cols=d.get("hidden_cols", set()),
                 formula_no_cache=d.get("formula_no_cache", set()),
+                error_cells=d.get("error_cells", {}),
                 has_external_links=flags["external_links"],
                 has_pivot=flags["pivot"],
             )
