@@ -24,7 +24,7 @@ def build_merge_origin(grid: SheetGrid) -> dict[tuple[int, int], tuple[int, int]
     return origin
 
 
-def _cell_value(grid: SheetGrid, origin: dict, r: int, c: int) -> object:
+def cell_value(grid: SheetGrid, origin: dict, r: int, c: int) -> object:
     orow, ocol = origin.get((r, c), (r, c))
     row = grid.values[orow] if orow < grid.n_rows else []
     return row[ocol] if ocol < len(row) else None
@@ -38,7 +38,7 @@ def flatten_header(grid: SheetGrid, region: Region, header_rows: int) -> dict[in
     for c in range(region.c1, region.c2 + 1):
         parts: list[str] = []
         for r in range(region.r1, region.r1 + header_rows):
-            v = _cell_value(grid, origin, r, c)
+            v = cell_value(grid, origin, r, c)
             if v is None:
                 continue
             s = clean_key(v)
@@ -62,7 +62,7 @@ def fill_region_values(
     for r in range(region.r1 + header_rows, region.r2 + 1):
         rec: dict[int, object] = {}
         for c in range(region.c1, region.c2 + 1):
-            v = _cell_value(grid, origin, r, c)
+            v = cell_value(grid, origin, r, c)
             if v is not None and not (isinstance(v, str) and v.strip() == ""):
                 rec[c] = v
         out.append(rec)

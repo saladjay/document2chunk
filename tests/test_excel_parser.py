@@ -189,3 +189,80 @@ def test_p1_header_year_data_row_rejected():
     assert len(result.rows) == 3
     assert set(result.rows[0].data) == {"发文年份", "级别", "发文单位", "政策名称"}
     assert result.rows[0].data["发文年份"] == "2015年"
+
+
+def test_p1_orphan_region_fallback_to_doc_blocks():
+    # 04/09/07 场景：标题行/说明区自成一区 → 旧版 0 行 0 块无声消失，新版兜底成块
+    from document2chunk.extractors.excel.parser import parse_excel_bytes
+    from tests._excel_fixtures import build_xlsx
+
+    # 空行隔断复刻 04 号真实结构；标题/尾注 ≥20 字走 doc 路线成块；
+    # 第三区是孤表头带（0 数据行）→ data_table 路径 0 产出 → 兜底
+    # （孤表头带前须隔 2 个空行：若三条带都是单空行间隔，MIN_CHAIN=3 的碎片回并
+    #   会把它们粘成一个 DOC 区域，兜底路径反而无从触发）
+    data = build_xlsx(
+        {"s": [
+            ["仁新项目智慧管养无人机巡检关键技术研究与应用 R&D 经费决算表（单位：万元）"],
+            [],
+            ["注意：本表数据需经财务部门复核确认，并加盖单位公章后于每周一前报送报送"],
+            [],
+            [],
+            ["支出科目说明", "报送口径"],
+        ]}
+    )
+    result = parse_excel_bytes(data, "t.xlsx")
+    texts = [b.text for b in result.blocks]
+    assert any("单位：万元" in t for t in texts)            # 标题行成块
+    assert any(t.startswith("注意") for t in texts)         # 尾注成块
+    assert any("支出科目说明" in t for t in texts)          # 孤表头兜底成块
+    assert any("兜底" in w for w in result.warnings)        # 兜底必留痕
+
+
+def test_p1_doc_sheet_header_rescue():
+    # 18 号场景：doc 路线首行是真实内容（非短列标签）→ 救援成块
+    from document2chunk.extractors.excel.parser import parse_excel_bytes
+    from tests._excel_fixtures import build_xlsx
+
+    data = build_xlsx(
+        {"s": [
+            ["科小星智能问答平台（一期验收）", "平台名称：智慧交通问答服务系统"],
+            ["为什么上传后没有反应？请检查网络连接是否正常，或稍后重试试试看。", "已处理完成，若仍未生效请联系管理员核实账号权限配置情况。"],
+        ]}
+    )
+    result = parse_excel_bytes(data, "t.xlsx")
+    headers = [b for b in result.blocks if b.meta.get("role") == "sheet_header"]
+    assert headers and "科小星" in headers[0].text
+
+
+def test_p1_doc_sheet_short_labels_still_folded():
+    # 11 号 FAQ 场景：短列标签（问题/答复）按设计折叠，不救援、不新增块
+    from document2chunk.extractors.excel.parser import parse_excel_bytes
+    from tests._excel_fixtures import build_xlsx
+
+    data = build_xlsx(
+        {"s": [
+            ["问题", "答复"],
+            ["为什么上传后没有反应？请检查网络连接是否正常，或稍后重试试试看。", "已处理完成，若仍未生效请联系管理员核实账号权限配置情况。"],
+        ]}
+    )
+    result = parse_excel_bytes(data, "t.xlsx")
+    assert not [b for b in result.blocks if b.meta.get("role") == "sheet_header"]
+    assert len(result.blocks) == 1
+
+
+def test_p1_key_structure_mismatch_warning():
+    # 04 号场景：同 sheet 两个等宽表结构不同 → 告警
+    from document2chunk.extractors.excel.parser import parse_excel_bytes
+    from tests._excel_fixtures import build_xlsx
+
+    data = build_xlsx(
+        {"s": [
+            ["科目", "金额"],
+            ["设备费", 100],
+            [], [],
+            ["科目", "支出"],
+            ["材料费", 50],
+        ]}
+    )
+    result = parse_excel_bytes(data, "t.xlsx")
+    assert any("表头结构不一致" in w for w in result.warnings)
