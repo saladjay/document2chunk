@@ -293,3 +293,27 @@ def test_p1_error_zh_table():
     assert error_zh(" #N/A ") == "无可用值"
     assert error_zh("普通文本") == "普通文本"
     assert error_zh(42) == 42
+
+
+def test_p1_totals_region_window_side_table():
+    # 05 号形态：主表与侧表同物理行并排（隔 1 空列）——侧表合计不得被主表列稀释
+    from document2chunk.extractors.excel.parser import parse_excel_bytes
+    from tests._excel_fixtures import build_xlsx
+
+    data = build_xlsx(
+        {"s": [
+            ["科目", "金额", None, "科目2", "金额2"],
+            ["人员费", 100, None, "甲", 10],
+            ["设备费", 200, None, "乙", 20],
+            ["燃料费", 300, None, "合计", 30],
+            ["合计", 600, None, None, None],
+        ]}
+    )
+    result = parse_excel_bytes(data, "t.xlsx")
+    main = [r for r in result.rows if r.data.get("科目") == "合计"]
+    side = [r for r in result.rows if r.data.get("科目2") == "合计"]
+    assert len(main) == 1 and main[0].meta.get("from_total") is True
+    assert len(side) == 1, "侧表合计行必须作为行产出"
+    assert side[0].meta.get("from_total") is True          # keyword+strict：窗内 30=10+20
+    assert "keyword" in side[0].meta["total_evidence"]
+    assert "strict" in side[0].meta["total_evidence"]

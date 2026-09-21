@@ -139,7 +139,7 @@ def main() -> int:
         detail = "; ".join(fails) if fails else (err or "")
         print(f"{status:14s} {stem[:40]:42s} {detail[:80]}")
         lines.append(f"| {stem.split('-')[0]} | {stem} | {status} | {detail} |")
-        if status == "FAIL":
+        if status == "FAIL" or status.startswith("ERROR"):
             exit_code = 1
     with open(REPORT, "w", encoding="utf-8") as f:
         f.write("\n".join(lines) + "\n")

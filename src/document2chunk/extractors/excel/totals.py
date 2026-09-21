@@ -41,7 +41,21 @@ def _numeric(grid: SheetGrid, r: int, c: int) -> object:
 def collect_total_signals(
     grid: SheetGrid, region: Region, header_rows: int
 ) -> dict[int, list[str]]:
-    """每数据行 → 命中信号列表（keyword/strict/partial/position 任意组合）。"""
+    """每数据行 → 命中信号列表（keyword/strict/partial/position 任意组合）。
+
+    信号一律在 region 列窗 [c1, c2] 内取值：同物理行并排的侧表（05 号决算表）
+    不得被主表列稀释——keyword 不得读到窗外行首、数值列不得并入窗外列。
+    """
+
+    def _window_cells(r: int) -> list[tuple[int, object]]:
+        row = grid.values[r] if r < grid.n_rows else []
+        out: list[tuple[int, object]] = []
+        for c in range(region.c1, region.c2 + 1):
+            v = row[c] if c < len(row) else None
+            if v is not None and not (isinstance(v, str) and v.strip() == ""):
+                out.append((c, v))
+        return out
+
     data_rows = list(range(region.r1 + header_rows, region.r2 + 1))
     signals: dict[int, list[str]] = {}
     if not data_rows:
@@ -49,9 +63,8 @@ def collect_total_signals(
 
     keyword_rows: set[int] = set()
     for r in data_rows:
-        row = grid.values[r] if r < grid.n_rows else []
-        ne = [v for v in row if v is not None and not (isinstance(v, str) and v.strip() == "")]
-        if ne and _is_total_label(ne[0]):
+        cells = _window_cells(r)
+        if cells and _is_total_label(cells[0][1]):
             keyword_rows.add(r)
             signals.setdefault(r, []).append("keyword")
 
@@ -59,14 +72,14 @@ def collect_total_signals(
         {
             c
             for r in data_rows
-            for c, v in enumerate(grid.values[r] if r < grid.n_rows else [])
+            for c, v in _window_cells(r)
             if isinstance(v, (int, float)) and not isinstance(v, bool)
         }
     )
     band_start = data_rows[-min(_PARTIAL_BAND, len(data_rows))]
     for r in data_rows:
-        if r in keyword_rows:
-            continue
+        # keyword 行也参与 strict/partial 评估：definite 需 len(signals)>=2，
+        # 侧表合计（05 号）往往窗内仅 1 数值列、唯一佐证就是 strict——跳过则永居 candidate。
         checked = hits = 0
         for c in numeric_cols:
             v = _numeric(grid, r, c)
