@@ -151,3 +151,41 @@ def test_p1_pure_list_no_header_promotion():
     data = build_xlsx({"列表": [["甲类"], ["乙类"], ["丙类"]]})
     result = parse_excel_bytes(data, "t.xlsx")
     assert [r.data["列1"] for r in result.rows] == ["甲类", "乙类", "丙类"]
+
+
+def test_p1_header_long_column_notes_kept():
+    # 14 号 canary 形态：表头行含 2/7 个 ≥30 字说明列名（软信号占比低）→ 表头保留
+    from document2chunk.extractors.excel.parser import parse_excel_bytes
+    from tests._excel_fixtures import build_xlsx
+
+    header = [
+        "序号", "项目编号", "立项年份", "项目来源", "承担单位",
+        "成果应用推广情况（如成果应用到什么项目，应用推广情况，成果转化情况等说明）",
+        "是否值得推广（项目成果可以转化为实际的生产力，进一步推动科技进步经济发展的说明）",
+    ]
+    data = build_xlsx(
+        {"s": [header, [1, "2016B0101", 2016, "科技厅", "利通公司", "长文本内容一", "长文本内容二"]]}
+    )
+    result = parse_excel_bytes(data, "t.xlsx")
+    assert len(result.rows) == 1
+    assert set(result.rows[0].data) == set(header)
+
+
+def test_p1_header_year_data_row_rejected():
+    # 21 号形态：真表头下一行以裸年份开头 → 拒升止步 h=1，年份行按数据输出
+    from document2chunk.extractors.excel.parser import parse_excel_bytes
+    from tests._excel_fixtures import build_xlsx
+
+    data = build_xlsx(
+        {"s": [
+            ["发文年份", "级别", "发文单位", "政策名称"],
+            ["2015年", "国家", "中共中央办公厅 国务院办公厅",
+             "中共中央办公厅 国务院办公厅印发《深化科技体制改革实施方案》全文内容较长较长较长较长较长较长"],
+            ["2016年", "国家", "国务院", "国务院关于印发实施《中华人民共和国促进科技成果转化法》若干规定的通知通知通知"],
+            ["2017年", "省级", "广东省科技厅", "广东省重点领域研发计划项目", 100],
+        ]}
+    )
+    result = parse_excel_bytes(data, "t.xlsx")
+    assert len(result.rows) == 3
+    assert set(result.rows[0].data) == {"发文年份", "级别", "发文单位", "政策名称"}
+    assert result.rows[0].data["发文年份"] == "2015年"

@@ -3,8 +3,10 @@
 - 表头 = 顶部连续全字符串行（AAAI 类型同质性），上限 5（真实语料最多 3 级）。
 - 下方无类型对比（全表皆字符串）时表头封顶 1 行——防吞纯文本数据区（盘点修正③）。
 - 分流：文档型（≤2 列全字符串含长文本）、表单式（表头区上方有 ≥80% 宽的横向大合并抬头）。
-- 拒升（2026-09-21 grill P1）：候选表头行含 URL/≥30 字长句/纯日期形态 → 不作表头；
-  首行即被拒升 → 整区按无表头输出（keys=列N），行内容零丢失（19 号 region2/3 教训）。
+- 拒升（2026-09-21 grill P1，同日修订）：候选表头行含 URL/纯日期（含裸年份）形态 → 一票否决
+  不作表头；≥30 字长句为软信号，须占该行非空格 ≥0.5 才拒升（14 号表头含 2 个长说明列名，
+  逐格否决会误杀真表头）。首行即被拒升且区域多于 1 行 → 整区按无表头输出（keys=列N），
+  行内容零丢失（19 号 region2/3 教训）；单行区域不拒升（0 产出由兜底救援）。
 - 宽合并横幅豁免：整行横跨 ≥半宽的合并抬头（标题横幅）不受拒升——112 定稿
   「标题作为表头路径第一级输出」（Q4），拒它会造成全语料大面积回归。
 """
@@ -16,8 +18,9 @@ from document2chunk.extractors.excel.models import Region, SheetGrid, SheetRoute
 
 MAX_HEADER_ROWS = 5
 _URL = re.compile(r"https?://|www\.", re.IGNORECASE)
-_DATEY = re.compile(r"^\d{4}[-/.年]\d{1,2}([-/.月]\d{1,2}日?)?$")
+_DATEY = re.compile(r"^\d{4}([-/.年]\d{1,2}([-/.月]\d{1,2}日?)?)?年?$")   # 含裸年份「2015」/「2015年」
 _SUSPICIOUS_LEN = 30
+_SUSPICIOUS_RATIO = 0.5
 _DOC_MAX_COLS = 2
 _DOC_MIN_LONG = 20
 
@@ -36,16 +39,6 @@ def _all_string(cells: list[object]) -> bool:
     return bool(ne) and all(isinstance(v, str) for v in ne)
 
 
-def _suspicious_cell(v: object) -> bool:
-    """URL / ≥30 字长句 / 纯日期形态的字符串不像列名。"""
-    if not isinstance(v, str):
-        return False
-    s = v.strip()
-    if not s:
-        return False
-    return bool(_URL.search(s)) or len(s) >= _SUSPICIOUS_LEN or bool(_DATEY.match(s))
-
-
 def _wide_merged_row(grid: SheetGrid, region: Region, r: int) -> bool:
     """该行存在横跨 ≥ 半宽（且 ≥2 列）的合并区 → 标题横幅，豁免拒升。"""
     half = max(2, (region.c2 - region.c1 + 1) // 2)
@@ -55,9 +48,22 @@ def _wide_merged_row(grid: SheetGrid, region: Region, r: int) -> bool:
 
 
 def _row_suspicious(grid: SheetGrid, region: Region, r: int) -> bool:
-    return not _wide_merged_row(grid, region, r) and any(
-        _suspicious_cell(v) for v in _row_values(grid, r, region.c1, region.c2)
-    )
+    """URL/日期形态一票否决；长句须占非空格 ≥_SUSPICIOUS_RATIO（14 号表头含长说明列名，不得误杀）。"""
+    if _wide_merged_row(grid, region, r):
+        return False
+    cells = [
+        v
+        for v in _row_values(grid, r, region.c1, region.c2)
+        if v is not None and not (isinstance(v, str) and v.strip() == "")
+    ]
+    if not cells:
+        return False
+    if any(
+        isinstance(v, str) and (_URL.search(v) or _DATEY.match(v.strip())) for v in cells
+    ):
+        return True
+    long_n = sum(1 for v in cells if isinstance(v, str) and len(v.strip()) >= _SUSPICIOUS_LEN)
+    return long_n / len(cells) >= _SUSPICIOUS_RATIO
 
 
 def detect_header_rows(grid: SheetGrid, region: Region) -> int:
@@ -78,9 +84,9 @@ def detect_header_rows(grid: SheetGrid, region: Region) -> int:
         else:
             break
     if h == 0:
-        if _row_suspicious(grid, region, region.r1):
-            return 0  # 首行拒升：整区无表头，行内容全保留（keys=列N）
-        return 1  # 首行含非字符串：单行表头兜底
+        if _row_suspicious(grid, region, region.r1) and height > 1:
+            return 0  # 首行拒升（仅多行区域）：整区无表头，行内容全保留
+        return 1  # 单行区域不拒升（0 产出由兜底救援）／首行含非字符串：单行表头兜底
     below_mixed = any(
         not _all_string(_row_values(grid, r, region.c1, region.c2))
         for r in range(region.r1 + h, region.r2 + 1)
