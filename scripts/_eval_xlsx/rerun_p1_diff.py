@@ -49,7 +49,8 @@ def _check(stem: str, base: dict | None, new: dict, err: str | None) -> tuple[st
         return ("SKIP 需112复验" if "无法解析" in err else f"ERROR {err}"), []
     fails: list[str] = []
     if base is None:
-        return "SKIP 无基线", fails
+        # 无基线即该文件断言（含 canary 门）无处落地——按 ERROR 处理置 exit 1，勿静默放行
+        return f"ERROR 无基线: {os.path.join(BASELINE_DIR, stem + '.json')}", []
     rule = _rule(stem)
     if any(m in stem for m in CANARY_MARKS):
         ob, nb = base["rows"], new["rows"]
