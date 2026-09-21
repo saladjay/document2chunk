@@ -317,3 +317,31 @@ def test_p1_totals_region_window_side_table():
     assert side[0].meta.get("from_total") is True          # keyword+strict：窗内 30=10+20
     assert "keyword" in side[0].meta["total_evidence"]
     assert "strict" in side[0].meta["total_evidence"]
+
+
+def test_p1_header_ratio_boundary_and_url_veto():
+    # 软信号边界：长格占比恰 0.5 → 否决；URL 硬信号低占比（1/4 格）也一票否决
+    from document2chunk.extractors.excel.parser import parse_excel_bytes
+    from tests._excel_fixtures import build_xlsx
+
+    # 每个长格 36 字（≥30 阈值）：6 格中 3 长 = 恰 0.5 → 否决 → 整区无表头
+    long_a = "长表头说明文字长表头说明文字长表头说明文字长表头说明文字长表头说明文字一"
+    long_b = "长表头说明文字长表头说明文字长表头说明文字长表头说明文字长表头说明文字二"
+    long_c = "长表头说明文字长表头说明文字长表头说明文字长表头说明文字长表头说明文字三"
+    data = build_xlsx({"s": [
+        [long_a, "k1", long_b, "k2", long_c, "k3"],
+        ["v1", 1, "v2", 2, "v3", 3],
+    ]})
+    result = parse_excel_bytes(data, "t.xlsx")
+    assert len(result.rows) == 2
+    assert all(set(r.data) == {"列1", "列2", "列3", "列4", "列5", "列6"} for r in result.rows)
+
+    # URL 硬信号：候选表头行含 URL（占比仅 1/4）也否决 → 整区无表头，「链接」不得成键
+    data2 = build_xlsx({"s": [
+        ["名称", "链接", "https://example.com/x", "备注"],
+        ["甲", "https://example.com/x", "A", "b"],
+        ["乙", "https://example.com/y", "B", "c"],
+    ]})
+    result2 = parse_excel_bytes(data2, "t.xlsx")
+    assert len(result2.rows) == 3
+    assert all("链接" not in r.data for r in result2.rows)

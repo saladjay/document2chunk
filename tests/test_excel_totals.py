@@ -69,3 +69,27 @@ def test_red_column_named_total_not_misleading():
     assert signals[2] == ["position"]
     definite, candidate = classify_total_rows(signals)
     assert not definite and not candidate
+
+
+def test_p1_partial_band_only_candidate():
+    # partial（带内、部分列吻合）单独成信号 → 只 candidate 不 definite；
+    # 带外行（丙，hits=2/3）连 partial 都不得产 → 两个标都不打。
+    # 6 个数据行让 band（末 3 行 = 丁/戊/合计?）把丙挡在带外；合计? 行 a 列
+    # 15=1+2+3+4+5 唯一命中（checked=3, hits=1）→ keyword+partial → definite。
+    from document2chunk.extractors.excel.models import Region, SheetGrid
+    from document2chunk.extractors.excel.totals import classify_total_rows, collect_total_signals
+
+    grid = SheetGrid(name="s", values=[
+        ["名称", "a", "b", "c"],
+        ["甲", 1, 10, 100],
+        ["乙", 2, 20, 200],
+        ["丙", 3, 40, 300],       # 带外：b 40≠30（不 strict），a 3=1+2、c 300=100+200 命中（hits=2/3）也不产 partial
+        ["丁", 4, 70, 400],       # 带内：仅 b 70=10+20+40 命中 → partial 单独成信号
+        ["戊", 5, 60, 500],
+        ["合计?", 15, 999, 888],  # keyword+partial（hits=1/3，带内末行）→ definite
+    ])
+    signals = collect_total_signals(grid, Region(0, 0, 6, 3), 1)
+    definite, candidate = classify_total_rows(signals)
+    assert 6 in definite and "partial" in definite[6]
+    assert 4 in candidate and "partial" in candidate[4] and 4 not in definite
+    assert 3 not in definite and 3 not in candidate     # 带外行不产 partial
