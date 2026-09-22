@@ -14,7 +14,7 @@
 | **V1 现状** | merged=带标签 HTML；simple=管道表 | **即生产三分流行为**：[html_table_markdown](src/document2chunk/export/_helpers.py#L113) / [table_markdown](src/document2chunk/export/_helpers.py#L100) | [serialize.py:65 v1_html](_embedlab/serialize.py#L65) + [embed_eval.py:34 pipe_plain](_embedlab/embed_eval.py#L34) |
 | V2 展开管道表 | span 复制填充成规则网格转 pipe | 假想 | [expand_grid](_embedlab/serialize.py#L36) + [v2_pipe_expanded](_embedlab/serialize.py#L89) |
 | V3 KV 平铺 | 「表头路径: 值」行级文本（轨A 同约定：空层跳过/层内去重/撞名加（n）） | Excel 轨A [serializer](src/document2chunk/extractors/excel/serializer.py#L7) 风格 | [_header_keys](_embedlab/serialize.py#L103) + [v3_kv](_embedlab/serialize.py#L130) |
-| V4 XML | `<row r="i"><cell c="j" colspan.. rowspan..>` 带坐标 | 假想（论文中常胜格式） | [v4_xml](_embedlab/serialize.py#L152) |
+| V4 坐标 XML | `<row r="i"><cell c="j" colspan.. rowspan..>` 带坐标 | 假想（**≠论文 Table 4 的列名标签 XML**，「论文 XML 常胜」不适用于本变体——见[审查4 §4.1② 审核修正](Document2Chunk-表格嵌入格式-审查4-结果与机理.md)） | [v4_xml](_embedlab/serialize.py#L152) |
 | V5 HTML+前置标题 | V1 + 「表格：{表题\|就近标题}」行 | 假想 | [v5_caption](_embedlab/serialize.py#L82) |
 | V6 NL 摘要 | LLM 生成的 2-5 句表格摘要进向量（Unstructured 式实践） | 假想 | 生成 prompt [gen_relay.py:47 S_PROMPT](_embedlab/gen_relay.py#L47) |
 
