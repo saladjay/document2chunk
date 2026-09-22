@@ -1,0 +1,7 @@
+# 实验私有/可再生中间产物，不入库（见 审查3-测试过程 §7 与 审查5 §3）
+.env
+__pycache__/
+material/
+pool_base.json
+results/*.npy
+results/base_emb_*.npy
