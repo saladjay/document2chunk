@@ -70,6 +70,31 @@ def test_empty_auth_rejected_at_init():
         BellmLoader("http://gw:1/bellm/MinerU", auth="")
 
 
+def test_post_client_trust_env_false(monkeypatch):
+    """真连防回归：BellmLoader 的 httpx.Client 必须显式 trust_env=False。
+
+    Windows 本机系统代理（注册表 Clash 127.0.0.1:7890，不出现在 env）会把
+    128.23.74.3 公网段内网地址劫进隧道 → ReadTimeout（MockTransport 单测测不出，
+    曾真连翻车）。此处 spy 记录 loader 传给 httpx.Client 的 kwargs 钉死该约定。
+    """
+    real_client = httpx.Client
+    recorded = {}
+
+    def spy(*args, **kwargs):
+        recorded.update(kwargs)
+        kwargs.setdefault("trust_env", False)  # 桩恒安全：真 Client 不吃系统代理
+        return real_client(*args, **kwargs)
+
+    def handler(request):
+        return httpx.Response(200, json={"md_content": "# 标题\n\n正文。"})
+
+    monkeypatch.setattr(httpx, "Client", spy)
+    doc = BellmLoader("http://gw:1/bellm/MinerU", auth="Basic a2V4",
+                      transport=_transport(handler)).load(b"%PDF-1.4")
+    assert doc.blocks
+    assert recorded.get("trust_env") is False
+
+
 def test_load_dispatch_bellm_by_env(monkeypatch):
     """engine 由 env 解析：MINERU_ENGINE=bellm 时走 BellmLoader（base_url/auth 取 env）。"""
     from mineru2doc import loader as loader_mod

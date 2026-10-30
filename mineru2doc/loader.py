@@ -304,7 +304,10 @@ class BellmLoader:
     def _post_file_parse(self, payload: bytes, filename: str):
         import httpx
         try:
-            with httpx.Client(timeout=self.timeout, transport=self._transport) as client:
+            # trust_env=False：绕过系统代理（Windows 注册表 Clash 会把 128.23.74.3
+            # 劫进隧道 → ReadTimeout；MockTransport 单测测不出，真连曾翻车）
+            with httpx.Client(timeout=self.timeout, transport=self._transport,
+                              trust_env=False) as client:
                 r = client.post(
                     self.base_url + "/file_parse",
                     files={"file": (filename, payload, "application/pdf")},
