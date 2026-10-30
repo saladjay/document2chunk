@@ -349,11 +349,20 @@ class BellmLoader:
 # ──────────────────────────────────────────────────────────
 
 def load(source: Any, *, base_url: Optional[str] = None,
-         image_out_dir: Optional[str] = None) -> MinerUDoc:
-    """按输入类型分发：``.pdf`` + base_url → HttpLoader；目录/``.json``/``.md`` → FileLoader。
+         image_out_dir: Optional[str] = None,
+         engine: Optional[str] = None, auth: Optional[str] = None) -> MinerUDoc:
+    """按输入类型与引擎分发。
 
-    传 ``image_out_dir`` 则把图片落盘到该目录（保留 md 相对引用）。
+    engine：显式参数 > env ``MINERU_ENGINE``（默认 ``local``）。
+    - ``local``：``.pdf`` + base_url → HttpLoader（9030，MinerU 3.4.2 协议）；其余 → FileLoader。
+    - ``bellm``：一律 BellmLoader（研发中心网关，PDF/PNG/JPG/JPEG）。
     """
+    if (engine or os.environ.get("MINERU_ENGINE", "local")) == "bellm":
+        return BellmLoader(
+            base_url or os.environ.get("MINERU_BELLM_BASE_URL", DEFAULT_BELLM_BASE_URL),
+            auth=auth if auth is not None else os.environ.get("MINERU_BELLM_AUTH", ""),
+        ).load(source, image_out_dir=image_out_dir)
+
     is_pdf = (
         (isinstance(source, (str, os.PathLike)) and Path(source).suffix.lower() == ".pdf")
         or isinstance(source, (bytes, bytearray))

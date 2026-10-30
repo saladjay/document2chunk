@@ -9,6 +9,14 @@ from mineru2doc.loader import BellmLoader, MinerULoaderError
 JPEG_B64 = base64.b64encode(b"\xff\xd8\xff\xe0fakejpeg").decode()
 
 
+class _SpyLoader:
+    def __init__(self, tag):
+        self.tag = tag
+
+    def load(self, source, *, image_out_dir=None):
+        return self
+
+
 def _transport(handler):
     # httpx.Client 不能充当 transport（无 handle_request），直接给 MockTransport。
     return httpx.MockTransport(handler)
@@ -60,3 +68,34 @@ def test_no_md_content():
 def test_empty_auth_rejected_at_init():
     with pytest.raises(MinerULoaderError, match="MINERU_BELLM_AUTH"):
         BellmLoader("http://gw:1/bellm/MinerU", auth="")
+
+
+def test_load_dispatch_bellm_by_env(monkeypatch):
+    """engine 由 env 解析：MINERU_ENGINE=bellm 时走 BellmLoader（base_url/auth 取 env）。"""
+    from mineru2doc import loader as loader_mod
+
+    seen = {}
+
+    class _SpyBellm:
+        def __init__(self, base_url, *, auth, **kw):
+            seen.update(base_url=base_url, auth=auth)
+
+        def load(self, source, *, image_out_dir=None):
+            return _SpyLoader("BellmLoader")
+
+    monkeypatch.setenv("MINERU_ENGINE", "bellm")
+    monkeypatch.setenv("MINERU_BELLM_BASE_URL", "http://bellm-env:1/bellm/MinerU")
+    monkeypatch.setenv("MINERU_BELLM_AUTH", "Basic envkey")
+    monkeypatch.setattr(loader_mod, "BellmLoader", _SpyBellm)
+    assert loader_mod.load(b"%PDF-1.4").tag == "BellmLoader"
+    assert seen == {"base_url": "http://bellm-env:1/bellm/MinerU", "auth": "Basic envkey"}
+
+
+def test_local_engine_uses_httploader(monkeypatch):
+    """无 env 时默认 local：pdf+base_url 走 HttpLoader（9030 契约，桩断言不真连）。"""
+    from mineru2doc import loader as loader_mod
+
+    monkeypatch.delenv("MINERU_ENGINE", raising=False)
+    monkeypatch.setattr(loader_mod, "HttpLoader",
+                        lambda base_url, **kw: _SpyLoader("HttpLoader"))
+    assert loader_mod.load(b"%PDF-1.4", base_url="http://x:1").tag == "HttpLoader"
