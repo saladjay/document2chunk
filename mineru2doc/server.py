@@ -143,7 +143,10 @@ def _zip_mode(file: UploadFile, demote: bool):
     t0 = time.perf_counter()
     try:
         with tempfile.TemporaryDirectory() as tmp:
-            md = convert(data, demote=demote, image_dir=tmp, **_engine_kwargs())
+            # filename=fname：zip 模式 bytes 输入带上真实上传名（bellm 引擎按后缀定
+            # multipart 名与 content-type；local 引擎不消费该参数）
+            md = convert(data, demote=demote, image_dir=tmp, filename=fname,
+                         **_engine_kwargs())
             ms = int((time.perf_counter() - t0) * 1000)
             n_head, levels = _heading_stats(md)
             n_img = sum(len(fs) for _, _, fs in os.walk(tmp))

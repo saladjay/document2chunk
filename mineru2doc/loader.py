@@ -281,6 +281,10 @@ class HttpLoader:
 
 DEFAULT_BELLM_BASE_URL = "http://128.23.74.3:9091/bellm/MinerU"
 
+# 上传 content-type 必须与文件名后缀一致：网关疑似按后缀分发解析器
+_CONTENT_TYPE_BY_SUFFIX = {".png": "image/png", ".jpg": "image/jpeg",
+                           ".jpeg": "image/jpeg"}
+
 
 class BellmLoader:
     """POST {base_url}/file_parse：字段 ``file``（单数）+ ``parse_method=auto`` +
@@ -300,13 +304,15 @@ class BellmLoader:
         self.timeout = timeout
         self._transport = transport  # 测试注入 MockTransport；生产恒为 None
 
-    def load(self, source, *, image_out_dir: Optional[str] = None) -> MinerUDoc:
+    def load(self, source, *, image_out_dir: Optional[str] = None,
+             filename: Optional[str] = None) -> MinerUDoc:
+        """``filename`` 仅对 bytes 输入生效（multipart 上传名）；路径输入恒用真实文件名。"""
         if isinstance(source, (bytes, bytearray)):
-            payload, filename = bytes(source), "upload.pdf"
+            payload, name = bytes(source), filename or "upload.pdf"
         else:
             payload = Path(source).read_bytes()
-            filename = Path(source).name
-        md, images = self._post_file_parse(payload, filename, want_images=bool(image_out_dir))
+            name = Path(source).name
+        md, images = self._post_file_parse(payload, name, want_images=bool(image_out_dir))
         doc = MinerUDoc(blocks=parse_markdown(md))
         if image_out_dir and images:
             self._save_images(doc.blocks, images, image_out_dir)
@@ -322,9 +328,11 @@ class BellmLoader:
                 data = {"parse_method": "auto"}
                 if want_images:
                     data["return_images"] = "true"  # 要落盘图片才请求，省带宽
+                ctype = _CONTENT_TYPE_BY_SUFFIX.get(Path(filename).suffix.lower(),
+                                                    "application/pdf")
                 r = client.post(
                     self.base_url + "/file_parse",
-                    files={"file": (filename, payload, "application/pdf")},
+                    files={"file": (filename, payload, ctype)},
                     data=data,
                     headers={"Authorization": self.auth},
                 )
@@ -377,18 +385,20 @@ class BellmLoader:
 
 def load(source: Any, *, base_url: Optional[str] = None,
          image_out_dir: Optional[str] = None,
-         engine: Optional[str] = None, auth: Optional[str] = None) -> MinerUDoc:
+         engine: Optional[str] = None, auth: Optional[str] = None,
+         filename: Optional[str] = None) -> MinerUDoc:
     """按输入类型与引擎分发。
 
     engine：显式参数 > env ``MINERU_ENGINE``（默认 ``local``）。
     - ``local``：``.pdf`` + base_url → HttpLoader（9030，MinerU 3.4.2 协议）；其余 → FileLoader。
-    - ``bellm``：一律 BellmLoader（研发中心网关，PDF/PNG/JPG/JPEG）。
+    - ``bellm``：一律 BellmLoader（研发中心网关，PDF/PNG/JPG/JPEG）；bytes 输入可用
+      ``filename`` 指定上传名（local 两 Loader 不接收，契约零改动）。
     """
     if (engine or os.environ.get("MINERU_ENGINE", "local")) == "bellm":
         return BellmLoader(
             base_url or os.environ.get("MINERU_BELLM_BASE_URL", DEFAULT_BELLM_BASE_URL),
             auth=auth if auth is not None else os.environ.get("MINERU_BELLM_AUTH", ""),
-        ).load(source, image_out_dir=image_out_dir)
+        ).load(source, image_out_dir=image_out_dir, filename=filename)
 
     is_pdf = (
         (isinstance(source, (str, os.PathLike)) and Path(source).suffix.lower() == ".pdf")

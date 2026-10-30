@@ -57,6 +57,25 @@ def test_bellm_accepts_pdf_passes_engine_kwargs(bellm_env, tmp_path, monkeypatch
     assert r.json() == {"status": "ok"}
 
 
+def test_bellm_zip_mode_threads_real_filename_to_convert(bellm_env, monkeypatch):
+    """zip 模式把上传文件名透传给 convert(filename=...)：PNG/JPG 不得被伪装成 upload.pdf。"""
+    captured = {}
+
+    def fake_convert(source, *, base_url=None, engine=None, demote=False,
+                     image_dir=None, filename=None):
+        captured.update(engine=engine, filename=filename, source=source)
+        return "# 桩\n\n正文"
+
+    monkeypatch.setattr(server_mod, "convert", fake_convert)
+    r = TestClient(create_app()).post("/parse", files={
+        "file": ("扫描.png", io.BytesIO(b"\x89PNG fake"), "image/png")})
+    assert r.status_code == 200
+    assert r.headers["content-type"] == "application/zip"
+    assert captured["engine"] == "bellm"
+    assert captured["filename"] == "扫描.png"
+    assert captured["source"] == b"\x89PNG fake"
+
+
 def test_bellm_without_auth_fails_fast(bellm_env, monkeypatch):
     monkeypatch.setenv("MINERU_BELLM_AUTH", "")
     with pytest.raises(RuntimeError, match="MINERU_BELLM_AUTH"):

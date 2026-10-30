@@ -34,6 +34,32 @@ def test_md_only(tmp_path):
     assert doc.blocks and doc.blocks[0].text == "标题"
 
 
+def test_bytes_filename_threads_multipart_name_and_content_type():
+    """zip 模式 bytes 输入透传真实文件名：multipart 文件名 + 按后缀 content-type。
+
+    网关疑似按上传文件名后缀分发解析器——bytes 输入恒名 upload.pdf 会让对接文档
+    承诺的 PNG/JPG 上传名不副实（JPEG 字节伪装成 .pdf）→ 502 风险。路径输入恒有
+    真实名，不受影响；不给 filename 时回退 upload.pdf + application/pdf。
+    """
+    bodies = []
+
+    def handler(request):
+        bodies.append(request.content)
+        return httpx.Response(200, json={"md_content": "# T\n\n正文"})
+
+    loader = BellmLoader("http://gw:1/bellm/MinerU", auth="Basic a2V4",
+                         transport=_transport(handler))
+    loader.load(b"\x89PNG fake", filename="scan.png")
+    loader.load(b"\xff\xd8 fake", filename="photo.jpeg")
+    loader.load(b"%PDF-1.4")  # 缺省：无名 bytes 仍按 PDF 上传
+    assert b'filename="scan.png"' in bodies[0]
+    assert b'Content-Type: image/png' in bodies[0]
+    assert b'filename="photo.jpeg"' in bodies[1]
+    assert b'Content-Type: image/jpeg' in bodies[1]
+    assert b'filename="upload.pdf"' in bodies[2]
+    assert b'Content-Type: application/pdf' in bodies[2]
+
+
 def test_images_saved_under_md_ref_relative_path(tmp_path):
     """定案（e2e 实测 2026-10-30）：md 引用 images/<hash>.jpg，键是裸 <hash>.jpg。
     落盘须按 md 引用的完整相对路径（image_out_dir/images/<hash>.jpg），使
@@ -169,7 +195,7 @@ def test_load_dispatch_bellm_by_env(monkeypatch):
         def __init__(self, base_url, *, auth, **kw):
             seen.update(base_url=base_url, auth=auth)
 
-        def load(self, source, *, image_out_dir=None):
+        def load(self, source, *, image_out_dir=None, filename=None):
             return _SpyLoader("BellmLoader")
 
     monkeypatch.setenv("MINERU_ENGINE", "bellm")
