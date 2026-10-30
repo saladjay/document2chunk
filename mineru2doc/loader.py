@@ -268,6 +268,83 @@ class HttpLoader:
 
 
 # ──────────────────────────────────────────────────────────
+#  BellmLoader（研发中心 bellm 网关，MinerU 1.x 系 HTTP API）
+# ──────────────────────────────────────────────────────────
+
+DEFAULT_BELLM_BASE_URL = "http://128.23.74.3:9091/bellm/MinerU"
+
+
+class BellmLoader:
+    """POST {base_url}/file_parse：字段 ``file``（单数）+ ``parse_method=auto`` +
+    ``Authorization`` 头。响应 ``{"md_content": str, "images": {文件名: data-url}}``；
+    images 值带 ``data:image/...;base64,`` 前缀（与 9030 裸 base64 不同），键即文件名。
+    """
+
+    def __init__(self, base_url: str, *, auth: str, timeout: float = 300.0,
+                 transport: "httpx.BaseTransport | None" = None) -> None:
+        if not auth:
+            raise MinerULoaderError("bellm 引擎需要 MINERU_BELLM_AUTH（形如 'Basic a2V4...'）")
+        self.base_url = base_url.rstrip("/")
+        self.auth = auth
+        self.timeout = timeout
+        self._transport = transport  # 测试注入 MockTransport；生产恒为 None
+
+    def load(self, source, *, image_out_dir: Optional[str] = None) -> MinerUDoc:
+        if isinstance(source, (bytes, bytearray)):
+            payload, filename = bytes(source), "upload.pdf"
+        else:
+            payload = Path(source).read_bytes()
+            filename = Path(source).name
+        md, images = self._post_file_parse(payload, filename)
+        doc = MinerUDoc(blocks=parse_markdown(md))
+        if image_out_dir and images:
+            self._save_images(images, image_out_dir)
+        return doc
+
+    def _post_file_parse(self, payload: bytes, filename: str):
+        import httpx
+        try:
+            with httpx.Client(timeout=self.timeout, transport=self._transport) as client:
+                r = client.post(
+                    self.base_url + "/file_parse",
+                    files={"file": (filename, payload, "application/pdf")},
+                    data={"parse_method": "auto"},
+                    headers={"Authorization": self.auth},
+                )
+        except httpx.HTTPError as e:
+            raise MinerULoaderError(f"调用 bellm {self.base_url}/file_parse 失败：{e}") from e
+        if r.status_code != 200:
+            raise MinerULoaderError(f"bellm 返回 {r.status_code}：{r.text[:200]}")
+        try:
+            resp = r.json()
+        except ValueError as e:
+            raise MinerULoaderError(f"bellm 响应非 JSON：{e}") from e
+        md = resp.get("md_content")
+        if not md:
+            raise MinerULoaderError(f"bellm 响应无 md_content（键：{sorted(resp)}）")
+        return md, resp.get("images") or {}
+
+    @staticmethod
+    def _save_images(images: dict, image_out_dir: str) -> int:
+        """data-url 前缀 base64 → 落盘 image_out_dir/<键名>。键即文件名（<hash>.jpg）。"""
+        n = 0
+        for name, value in images.items():
+            _safe = os.path.basename(name)
+            if not _safe:
+                continue
+            _, _, b64 = value.partition(",")
+            try:
+                data = base64.b64decode(b64)
+            except (ValueError, TypeError):
+                continue  # 坏图不阻断
+            dest = Path(image_out_dir) / _safe
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            dest.write_bytes(data)
+            n += 1
+        return n
+
+
+# ──────────────────────────────────────────────────────────
 #  统一入口
 # ──────────────────────────────────────────────────────────
 
