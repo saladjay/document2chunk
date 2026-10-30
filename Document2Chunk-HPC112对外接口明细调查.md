@@ -45,7 +45,7 @@
 | 变量 | 值 | 说明 |
 |---|---|---|
 | `DOCUMENT2CHUNK_OCR_ENDPOINT` | `http://host.docker.internal:8000` | 宿主 pandocr |
-| `DOCUMENT2CHUNK_OCR_TOKEN` | `06mPxXt...oi8`（表格服务 token 同值） | .env 注入；缺失→扫描件 500 |
+| `DOCUMENT2CHUNK_OCR_TOKEN` | `***`（值已隐去；表格服务 token 同源） | .env 注入；缺失→扫描件 500 |
 | `DOCUMENT2CHUNK_OCR_MODEL` | `vl` | |
 | `DOCUMENT2CHUNK_OCR_TIMEOUT` | `300` | |
 | `DOCUMENT2CHUNK_SAVE_OUTPUT_DIR` | （空） | zip 模式响应留痕**关闭**；写 `/app/outputs` 可重开 |
@@ -232,4 +232,4 @@ bellm 引擎 env（compose 服务 `mineru2doc-bellm`，端口 `9302:8000`）：
 ### 8.4 截至本节的待办
 
 - 9302 容器尚未在 112 实际部署（部署与验收见计划 Task 6：`docker compose up -d --build mineru2doc-bellm` 后 `health`/zip/格式校验三连验）
-- 带插图 PDF 的 md 图片引用格式未实证（两份实测样本 md 均无图片引用），Task 5 e2e 定案
+- 带插图 PDF 的 md 图片引用格式已定案（Task 5 e2e，2026-10-30 两轮真连验证 refs==saved）：bellm md 引用带前缀 `images/<hash>.jpg`，`_save_images` 按 md 引用的完整相对路径落盘 `images/` 子目录，zip 解压即可渲染——口径同对接文档 §3/§4.4/§9
