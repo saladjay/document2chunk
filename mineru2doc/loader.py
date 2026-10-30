@@ -21,6 +21,7 @@ from __future__ import annotations
 import base64
 import json
 import os
+import re
 import shutil
 from pathlib import Path
 from typing import Any, List, Optional, Tuple, Union
@@ -108,6 +109,13 @@ def _items_to_blocks(items: List[dict]) -> List[Block]:
 # ──────────────────────────────────────────────────────────
 #  图片落盘（参考 OCR _image_to_node）
 # ──────────────────────────────────────────────────────────
+
+def _safe_rel_path(ref: str) -> str:
+    """md 引用相对路径 → 安全落盘子路径：剥盘符/绝对锚/``..``/``.``，``/`` 归一。"""
+    parts = [p for p in re.split(r"[/\\]+", ref or "")
+             if p not in ("", ".", "..") and ":" not in p]
+    return "/".join(parts)
+
 
 def _save_http_images(blocks: List[Block], images: dict, image_out_dir: str) -> int:
     """响应 images dict（键=basename，值=base64）→ 落盘到 image_out_dir/<img_path>。"""
@@ -276,8 +284,11 @@ DEFAULT_BELLM_BASE_URL = "http://128.23.74.3:9091/bellm/MinerU"
 
 class BellmLoader:
     """POST {base_url}/file_parse：字段 ``file``（单数）+ ``parse_method=auto`` +
-    ``Authorization`` 头。响应 ``{"md_content": str, "images": {文件名: data-url}}``；
-    images 值带 ``data:image/...;base64,`` 前缀（与 9030 裸 base64 不同），键即文件名。
+    ``Authorization`` 头；要落盘图片时另附 ``return_images=true``（网关缺省不回图片
+    字节，2026-10-30 实测）。响应 ``{"md_content": str, "images": {裸文件名: data-url}}``；
+    images 值带 ``data:image/...;base64,`` 前缀（与 9030 裸 base64 不同），键是裸
+    ``<hash>.jpg``，而 md 引用 ``images/<hash>.jpg``——故落盘按 **md 引用的完整相对
+    路径**（``image_out_dir/images/<hash>.jpg``），与 9030 的 img_path 语义一致。
     """
 
     def __init__(self, base_url: str, *, auth: str, timeout: float = 300.0,
@@ -295,23 +306,26 @@ class BellmLoader:
         else:
             payload = Path(source).read_bytes()
             filename = Path(source).name
-        md, images = self._post_file_parse(payload, filename)
+        md, images = self._post_file_parse(payload, filename, want_images=bool(image_out_dir))
         doc = MinerUDoc(blocks=parse_markdown(md))
         if image_out_dir and images:
-            self._save_images(images, image_out_dir)
+            self._save_images(doc.blocks, images, image_out_dir)
         return doc
 
-    def _post_file_parse(self, payload: bytes, filename: str):
+    def _post_file_parse(self, payload: bytes, filename: str, *, want_images: bool = False):
         import httpx
         try:
             # trust_env=False：绕过系统代理（Windows 注册表 Clash 会把 128.23.74.3
             # 劫进隧道 → ReadTimeout；MockTransport 单测测不出，真连曾翻车）
             with httpx.Client(timeout=self.timeout, transport=self._transport,
                               trust_env=False) as client:
+                data = {"parse_method": "auto"}
+                if want_images:
+                    data["return_images"] = "true"  # 要落盘图片才请求，省带宽
                 r = client.post(
                     self.base_url + "/file_parse",
                     files={"file": (filename, payload, "application/pdf")},
-                    data={"parse_method": "auto"},
+                    data=data,
                     headers={"Authorization": self.auth},
                 )
         except httpx.HTTPError as e:
@@ -328,21 +342,31 @@ class BellmLoader:
         return md, resp.get("images") or {}
 
     @staticmethod
-    def _save_images(images: dict, image_out_dir: str) -> int:
-        """data-url 前缀 base64 → 落盘 image_out_dir/<键名>。键即文件名（<hash>.jpg）。"""
+    def _save_images(blocks: List[Block], images: dict, image_out_dir: str) -> int:
+        """按 md 引用的完整相对路径落盘（键=裸 basename 查 dict，dest=img_path）。"""
         n = 0
-        for name, value in images.items():
-            _safe = os.path.basename(name)
-            if not _safe:
+        for b in blocks:
+            if b.type != IMAGE or not b.img_path:
                 continue
-            _, _, b64 = value.partition(",")
+            rel = _safe_rel_path(b.img_path)
+            if not rel:
+                continue
+            key = os.path.basename(rel)
+            value = images.get(key) or images.get(b.img_path)
+            if not value:
+                continue
+            v = str(value)
+            b64 = v.partition(",")[2] if "," in v else v  # data-url 剥前缀；裸 base64 整值
             try:
                 data = base64.b64decode(b64)
             except (ValueError, TypeError):
                 continue  # 坏图不阻断
-            dest = Path(image_out_dir) / _safe
+            dest = Path(image_out_dir) / rel
             dest.parent.mkdir(parents=True, exist_ok=True)
-            dest.write_bytes(data)
+            try:
+                dest.write_bytes(data)
+            except OSError:
+                continue
             n += 1
         return n
 

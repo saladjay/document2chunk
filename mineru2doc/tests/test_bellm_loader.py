@@ -34,17 +34,81 @@ def test_md_only(tmp_path):
     assert doc.blocks and doc.blocks[0].text == "标题"
 
 
-def test_images_data_url_stripped(tmp_path):
+def test_images_saved_under_md_ref_relative_path(tmp_path):
+    """定案（e2e 实测 2026-10-30）：md 引用 images/<hash>.jpg，键是裸 <hash>.jpg。
+    落盘须按 md 引用的完整相对路径（image_out_dir/images/<hash>.jpg），使
+    result.md 相对引用就地可解析——与 9030 HttpLoader 的 img_path 语义一致。"""
     def handler(request):
         return httpx.Response(200, json={
-            "md_content": "# T\n\n正文",
+            "md_content": "# T\n\n![](images/ab12.jpg)\n\n正文",
             "images": {"ab12.jpg": f"data:image/jpeg;base64,{JPEG_B64}"},
         })
 
     out = tmp_path / "imgs"
     BellmLoader("http://gw:1/bellm/MinerU", auth="Basic a2V4",
                 transport=_transport(handler)).load(b"%PDF-1.4", image_out_dir=str(out))
-    assert (out / "ab12.jpg").read_bytes() == b"\xff\xd8\xff\xe0fakejpeg"
+    assert (out / "images" / "ab12.jpg").read_bytes() == b"\xff\xd8\xff\xe0fakejpeg"
+    assert not (out / "ab12.jpg").exists()  # 不再平铺在 image_out_dir 根
+
+
+def test_return_images_flag_only_when_saving(tmp_path):
+    """return_images=true 仅在要落盘图片时携带（网关缺省不回图片字节，省带宽）。"""
+    bodies = []
+
+    def handler(request):
+        bodies.append(request.content.decode("latin-1"))
+        return httpx.Response(200, json={"md_content": "# T\n\n正文"})
+
+    loader = BellmLoader("http://gw:1/bellm/MinerU", auth="Basic a2V4",
+                         transport=_transport(handler))
+    loader.load(b"%PDF-1.4")
+    loader.load(b"%PDF-1.4", image_out_dir=str(tmp_path / "imgs"))
+    assert 'name="return_images"' not in bodies[0]
+    assert 'name="return_images"' in bodies[1]
+
+
+def test_bare_base64_value_decoded(tmp_path):
+    """data-url 前缀缺失（裸 base64，9030 形态）时按整值解码，不落空文件。"""
+    def handler(request):
+        return httpx.Response(200, json={
+            "md_content": "![](images/x.jpg)",
+            "images": {"x.jpg": JPEG_B64},
+        })
+
+    out = tmp_path / "imgs"
+    BellmLoader("http://gw:1/bellm/MinerU", auth="Basic a2V4",
+                transport=_transport(handler)).load(b"%PDF-1.4", image_out_dir=str(out))
+    assert (out / "images" / "x.jpg").read_bytes() == b"\xff\xd8\xff\xe0fakejpeg"
+
+
+def test_orphan_image_key_not_saved(tmp_path):
+    """dict 有键但 md 无对应引用 → 不落盘（与 9030 _save_http_images 同语义）。"""
+    def handler(request):
+        return httpx.Response(200, json={
+            "md_content": "# T\n\n正文",
+            "images": {"orphan.jpg": f"data:image/jpeg;base64,{JPEG_B64}"},
+        })
+
+    out = tmp_path / "imgs"
+    BellmLoader("http://gw:1/bellm/MinerU", auth="Basic a2V4",
+                transport=_transport(handler)).load(b"%PDF-1.4", image_out_dir=str(out))
+    assert not out.exists() or not any(out.rglob("*"))
+
+
+def test_traversal_ref_sanitized(tmp_path):
+    """md 引用带 ../.. 时剥危险段后落 basename，不逃出 image_out_dir。"""
+    def handler(request):
+        return httpx.Response(200, json={
+            "md_content": "![](../../evil.jpg)",
+            "images": {"evil.jpg": f"data:image/jpeg;base64,{JPEG_B64}"},
+        })
+
+    out = tmp_path / "imgs"
+    BellmLoader("http://gw:1/bellm/MinerU", auth="Basic a2V4",
+                transport=_transport(handler)).load(b"%PDF-1.4", image_out_dir=str(out))
+    assert (out / "evil.jpg").read_bytes() == b"\xff\xd8\xff\xe0fakejpeg"
+    outside = tmp_path / "evil.jpg"
+    assert not outside.exists()
 
 
 def test_bad_auth_502_error():
