@@ -23,3 +23,27 @@ services:
       timeout: 5s
       retries: 3
       start_period: 10s
+
+  mineru2doc-bellm:
+    container_name: mineru2doc-bellm
+    build: .
+    image: mineru2doc:latest
+    restart: unless-stopped
+    # 研发中心 bellm 网关（128.23.74.3 公网段内网机，容器直连，非 host.docker.internal）
+    environment:
+      - MINERU_ENGINE=bellm
+      - MINERU_BELLM_BASE_URL=${MINERU_BELLM_BASE_URL:-http://128.23.74.3:9091/bellm/MinerU}
+      - MINERU_BELLM_AUTH=${MINERU_BELLM_AUTH}   # .env 注入；缺失容器启动即退（fail-fast）
+    ports:
+      - "9302:8000"   # 对外 9302（9300=MinerU 3.4.2 本地引擎，9301=document2chunk）
+    deploy:
+      resources:
+        limits:
+          cpus: "2"
+          memory: 2G
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/health').status==200 else 1)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
