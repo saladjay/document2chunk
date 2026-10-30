@@ -8,8 +8,10 @@
 - **zip 模式**（``output-path=false``，跨机器）：表单含 ``file``（binary）→ 返回 zip 字节流，
   根目录 ``result.md`` + ``images/``。
 
-``GET /health`` → ``{"status":"ok",...}``。每次解析记一行结构化日志。配置：``MINERU_BASE_URL``、
-``MINERU_TIMEOUT``。端点同步 ``def``（线程池跑阻塞 convert）。
+``GET /health`` → ``{"status":"ok",...}``（含 ``engine`` 字段）。每次解析记一行结构化日志。
+配置：``MINERU_BASE_URL``、``MINERU_TIMEOUT``、``MINERU_ENGINE``（``local|bellm``，bellm 另需
+``MINERU_BELLM_BASE_URL``/``MINERU_BELLM_AUTH``，auth 缺失时 create_app 直接抛错 fail-fast）。
+端点同步 ``def``（线程池跑阻塞 convert）。
 """
 
 from __future__ import annotations
@@ -27,7 +29,7 @@ from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.responses import JSONResponse, Response
 
 from . import __version__, convert, convert_to_dir
-from .loader import MinerULoaderError
+from .loader import DEFAULT_BELLM_BASE_URL, MinerULoaderError
 
 DEFAULT_BASE_URL = os.environ.get("MINERU_BASE_URL", "http://host.docker.internal:9030")
 MINERU_TIMEOUT = float(os.environ.get("MINERU_TIMEOUT", "300"))
@@ -40,6 +42,16 @@ if not log.handlers:
 log.setLevel(logging.INFO)
 log.propagate = False
 
+_BELLM_ALLOWED_EXTS = {".pdf", ".png", ".jpg", ".jpeg"}
+
+
+def _engine_kwargs() -> dict:
+    """request 时读 env（便于测试）：返回 convert/convert_to_dir 的引擎 kwargs。"""
+    if os.environ.get("MINERU_ENGINE", "local") == "bellm":
+        return {"engine": "bellm",
+                "base_url": os.environ.get("MINERU_BELLM_BASE_URL", DEFAULT_BELLM_BASE_URL)}
+    return {"engine": "local", "base_url": DEFAULT_BASE_URL}
+
 
 def _heading_stats(md: str) -> Tuple[int, dict]:
     hs = [l for l in md.splitlines() if re.match(r"^#{1,6}\s", l)]
@@ -51,11 +63,15 @@ def _heading_stats(md: str) -> Tuple[int, dict]:
 
 
 def create_app() -> FastAPI:
+    if os.environ.get("MINERU_ENGINE", "local") == "bellm" and not os.environ.get("MINERU_BELLM_AUTH"):
+        raise RuntimeError("MINERU_ENGINE=bellm 需要 MINERU_BELLM_AUTH（'Basic xxx'）")
+
     app = FastAPI(title="mineru2doc", version=__version__)
 
     @app.get("/health")
     def health() -> dict:
-        return {"status": "ok", "version": __version__, "mineru_base_url": DEFAULT_BASE_URL}
+        return {"status": "ok", "version": __version__, "mineru_base_url": DEFAULT_BASE_URL,
+                "engine": os.environ.get("MINERU_ENGINE", "local")}
 
     @app.post("/parse")
     def parse(
@@ -65,6 +81,15 @@ def create_app() -> FastAPI:
         image_dir: Optional[str] = Form(None),
         demote: bool = Form(False),
     ):
+        # bellm 引擎：网关仅吃 PDF/PNG/JPG/JPEG，前置拦截（两种模式统一）
+        if os.environ.get("MINERU_ENGINE", "local") == "bellm":
+            name = (getattr(file, "filename", None) if file is not None else None) or file_path or ""
+            ext = os.path.splitext(name)[1].lower()
+            if ext not in _BELLM_ALLOWED_EXTS:
+                return JSONResponse(status_code=400, content={
+                    "status": "error",
+                    "message": f"研发中心通道(bellm)仅支持 PDF/PNG/JPG/JPEG，收到: {name or '(无文件名)'}"})
+
         # 路径模式：有 file_path 字段
         if file_path:
             return _path_mode(file_path, output_dir, image_dir, demote)
@@ -88,7 +113,7 @@ def _path_mode(file_path: str, output_dir: Optional[str], image_dir: Optional[st
 
     t0 = time.perf_counter()
     try:
-        result_md = convert_to_dir(file_path, output_dir, image_dir, base_url=DEFAULT_BASE_URL, demote=demote)
+        result_md = convert_to_dir(file_path, output_dir, image_dir, demote=demote, **_engine_kwargs())
         ms = int((time.perf_counter() - t0) * 1000)
         md = open(result_md, encoding="utf-8").read()
         n_head, levels = _heading_stats(md)
@@ -118,7 +143,7 @@ def _zip_mode(file: UploadFile, demote: bool):
     t0 = time.perf_counter()
     try:
         with tempfile.TemporaryDirectory() as tmp:
-            md = convert(data, base_url=DEFAULT_BASE_URL, demote=demote, image_dir=tmp)
+            md = convert(data, demote=demote, image_dir=tmp, **_engine_kwargs())
             ms = int((time.perf_counter() - t0) * 1000)
             n_head, levels = _heading_stats(md)
             n_img = sum(len(fs) for _, _, fs in os.walk(tmp))
