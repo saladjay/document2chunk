@@ -147,7 +147,7 @@ class TableExtractor:
 
 ```ini
 # .env（已 gitignore）
-DOCUMENT2CHUNK_TABLE_TOKEN=06mPxXt3...        # 与 pandocr-web / OCR 共用
+DOCUMENT2CHUNK_TABLE_TOKEN=<见 112 .env；与 pandocr-web 共用（2026-10-30 已轮换）>        # 与 pandocr-web / OCR 共用
 DOCUMENT2CHUNK_TABLE_ENDPOINT=http://128.23.67.112:8000
 DOCUMENT2CHUNK_TABLE_TIMEOUT=900
 DOCUMENT2CHUNK_TABLE_FMT=html,json

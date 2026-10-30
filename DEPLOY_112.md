@@ -26,7 +26,7 @@ git pull git@128.23.74.5:dengyongjie/document2chunk.git main
 # （备选：GitHub 通的时候 git pull origin main 也可以）
 
 # 2. 准备 OCR token（PaddleOCR 服务 token，同 :8000 那个）
-export DOCUMENT2CHUNK_OCR_TOKEN=06mPxXt3BEhP6cM6DGlZ9EPdVeUP1ULo1cM5vfuloi8
+export DOCUMENT2CHUNK_OCR_TOKEN=<见 112:/home/user/document2chunk/.env（2026-10-30 已轮换）>
 #   或写 .env：echo "DOCUMENT2CHUNK_OCR_TOKEN=..." > .env
 
 # 3. 构建并启动 d2c 服务（:9301）
