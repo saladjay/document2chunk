@@ -20,6 +20,8 @@ def convert(
     demote: bool = False,
     output: str | None = None,
     image_dir: str | None = None,
+    engine: str | None = None,
+    filename: str | None = None,
 ) -> str:
     """端到端：MinerU 结果 → 多级标题 Markdown 字符串。
 
@@ -30,6 +32,9 @@ def convert(
         output: 写入文件路径；``-`` = stdout（返回值仍是字符串）；None = 只返回字符串。
         image_dir: 图片落盘目录（保留 md 相对引用 ``images/<hash>.jpg``）。None 时：若
             ``output`` 是文件则取其所在目录，否则不落盘。
+        engine: 引擎开关 ``local|bellm``。None 时读 env ``MINERU_ENGINE``（默认 local）。
+        filename: bytes 输入的上传文件名（zip 模式 PNG/JPG 必须给真实名；仅 bellm 引擎
+            生效，local 两 Loader 不接收）。
     """
     import os
 
@@ -42,7 +47,8 @@ def convert(
     if image_out_dir is None and output and output != "-":
         image_out_dir = os.path.dirname(os.path.abspath(output)) or "."
 
-    doc = load(source, base_url=base_url, image_out_dir=image_out_dir)
+    doc = load(source, base_url=base_url, image_out_dir=image_out_dir, engine=engine,
+               filename=filename)
     blocks = RegexJudge(demote=demote).remediate(doc.blocks)
     blocks = normalize_levels(blocks)
     md = to_markdown(blocks)
@@ -64,11 +70,13 @@ def convert_to_dir(
     *,
     base_url: str | None = None,
     demote: bool = False,
+    engine: str | None = None,
 ) -> str:
     """读 ``input_file`` → 写 ``{output_dir}/result.md`` + 图片到 ``image_dir``。
 
     图片默认落 ``output_dir/images``；``result.md`` 用相对路径 ``images/<name>`` 引用，
     故 ``image_dir`` 应为 ``output_dir/images``（契约默认）。HTTP 路径模式 / CLI 模式共用。
+    engine：引擎开关 ``local|bellm``（None 时读 env ``MINERU_ENGINE``，默认 local）。
     返回 ``result.md`` 的绝对路径。
     """
     import os
@@ -80,7 +88,8 @@ def convert_to_dir(
         image_dir = os.path.join(output_dir, "images")
 
     with tempfile.TemporaryDirectory() as tmp:
-        md = convert(input_file, base_url=base_url, demote=demote, image_dir=tmp)
+        md = convert(input_file, base_url=base_url, demote=demote, image_dir=tmp,
+                     engine=engine)
         result_path = os.path.join(output_dir, "result.md")
         with open(result_path, "w", encoding="utf-8") as f:
             f.write(md)

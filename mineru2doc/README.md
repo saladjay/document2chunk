@@ -4,6 +4,7 @@
 > 对接 Chai「MinerU-Adapter」契约 v2.0（HTTP zip / HTTP path / CLI 三模式）。
 >
 > **部署地址**：`http://128.23.67.112:9300`（Docker 容器 `mineru2doc`，CPU-only，调宿主 MinerU `:9030`）。
+> 另有同镜像 bellm 引擎容器 `mineru2doc-bellm`：`http://128.23.67.112:9302`（研发中心 MinerU 通道，HTTP 契约同源，见 §10「引擎选择」）。
 
 ---
 
@@ -226,7 +227,38 @@ volumes:
 
 ---
 
-## 10. 排障
+## 10. 引擎选择（local | bellm）
+
+同一镜像两种引擎，由环境变量 `MINERU_ENGINE` 决定（默认 `local`）。引擎差异全部收敛在 loader 接缝，HTTP 契约（五字段、双模式、产物结构）两种引擎完全一致。
+
+| 变量 | 引擎 | 默认 | 说明 |
+|---|---|---|---|
+| `MINERU_ENGINE` | 两者 | `local` | `local` = 宿主 MinerU 3.4.2；`bellm` = 研发中心 bellm 网关 |
+| `MINERU_BASE_URL` | local | `http://host.docker.internal:9030` | 宿主 MinerU 地址（容器经 host-gateway 访问） |
+| `MINERU_BELLM_BASE_URL` | bellm | `http://128.23.74.3:9091/bellm/MinerU` | 研发中心网关地址（容器直连，非 host.docker.internal） |
+| `MINERU_BELLM_AUTH` | bellm | 无 | 网关 Basic 凭证（形如 `'Basic a2V4...'`），走 `.env` → compose 注入；engine=bellm 而缺失时 `create_app` 抛 `RuntimeError`，容器启动即退（fail-fast） |
+
+何时用哪个：
+
+| | local（容器 `mineru2doc`，:9300） | bellm（容器 `mineru2doc-bellm`，:9302） |
+|---|---|---|
+| 引擎 | 宿主 MinerU 3.4.2 `:9030`（`files` 复数字段，`backend=hybrid-engine`） | 研发中心 bellm 网关（`file` 单数字段 + Basic 认证 + `parse_method=auto`） |
+| 支持格式 | 由宿主 MinerU 决定（PDF 为主） | **仅 PDF/PNG/JPG/JPEG**，其余前置 400（2026-10-28 实测矩阵，见对接文档 §6） |
+| 认证 | 无 | 服务端持 Basic 凭证调网关（env 注入）；HTTP 服务本身仍无鉴权 |
+| 性能 | 未在此对比 | 42 页 PDF 28s（约 0.7s/页）；21KB 扫描件 1.3–1.5s（2026-10-28 实测） |
+| 图片返回 | 裸 base64 | data-url 前缀 base64（网关需 `return_images=true` 才回图片字节，服务落盘时自动附带并剥前缀；md 引用与落盘均为 `images/<hash>.jpg`，与 local 引擎产物一致——2026-10-30 实测） |
+
+bellm 引擎对调用方的可见差异只有三处：
+
+1. **前置格式校验**：非 `.pdf/.png/.jpg/.jpeg`（扩展名判定，大小写不敏感；无文件名/无扩展名同样拒绝）→ 400 `{"status":"error","message":"研发中心通道(bellm)仅支持 PDF/PNG/JPG/JPEG，收到: <name>"}`，两种模式统一；
+2. **`/health` 的 `engine` 字段**（`local`/`bellm`；`mineru_base_url` 为历史字段，仍显示本地引擎地址，不随引擎切换）；
+3. **网关错误 → 502**：网关不可达 / 非 200（含凭证失效 401）/ 超 300s 超时，均为 `MinerU 调用失败：bellm 返回 …`。
+
+9302 的调用方对接细节独立成册：`ParserDocByRDMinerU接口对接文档.md`（ParserDocByRDMinerU 是需求方对这条通道的命名，RD = 研发中心）。
+
+---
+
+## 11. 排障
 
 | 现象 | 排查 |
 |---|---|
