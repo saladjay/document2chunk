@@ -168,6 +168,8 @@ docker build --no-cache -t mineru2doc:latest . # --no-cache：杜绝缓存层混
 
 ## 4. 目标机启动（两台机器通用）
 
+以下启动的容器即为**真实接入研发中心接口**（`MINERU_ENGINE=bellm` 直连 `128.23.74.3:9091`），没有本地中转层；开发机本地测试走同一条链路（姿势见《ParserDocByRDMinerU-部署运维文档.md》§4.4）。
+
 ### 4.1 准备凭证
 
 研发中心 Basic 密钥（形如 `Basic <base64>`）写入一个 env 文件：

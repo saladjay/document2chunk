@@ -24,6 +24,8 @@
 
 **PDF 解析能力实测**（2026-10-30 部署验收，直接打 9302）：21KB 单页扫描 PDF → **HTTP 200 @ 1.9s**，`result.md` 448 字符内容正确；PNG → 200 @ 2.1s；docx → 400 前置守卫。e2e（带插图 PDF）`refs == saved` 两轮真连通过。结论：**RD 版本接口可正常分析 PDF**。
 
+**部署即接入**：本文档（含离线版）部署的容器 env 就是 `MINERU_ENGINE=bellm`——部署完成即真实接入研发中心接口，不存在「先接本地再切」的中间态。存量 9300（本地引擎）的配置化切换 runbook 见 §4.3；开发机本地测试姿势见 §4.4。
+
 ---
 
 ## 2. 前置条件
@@ -104,6 +106,47 @@ cd /home/user/document2chunk && docker compose -f docker-compose.yml up -d --no-
 ```
 
 > 共享 tag 同样适用于 load：load 后 9300 若被 recreate 也会用新镜像（行为等价）。
+
+### 4.3 存量 9300 切换到 RD 引擎（配置化切换，调用方零感知）
+
+部署形态不改、端口不改、Chai 契约不改——只换引擎开关。适合「正式切换」：
+
+```yaml
+# docker-compose.yml 的 mineru2doc service，environment 增加两行：
+      - MINERU_ENGINE=bellm                          # 默认 local → 切到 RD
+      - MINERU_BELLM_AUTH=${MINERU_BELLM_AUTH}       # .env 已有该值（9302 上线时写入）
+```
+
+```bash
+cd /home/user/document2chunk
+docker compose -f docker-compose.yml up -d --force-recreate --no-deps --no-build mineru2doc
+```
+
+- 切换后对外仍是 `128.23.67.112:9300` + `/parse` 五字段，**调用方（Chai）零改动零感知**
+- 切换后行为差异（提前告知调用方）：仅收 PDF/PNG/JPG/JPEG（其余 400）、速度 ~25×、低质扫描件表格偏弱、`/health` 多 `"engine":"bellm"`
+- **回滚**：`MINERU_ENGINE=bellm` 改回 `local`（或删掉两行）→ 同一条 recreate 命令
+- 注意：recreate 会把 9300 从旧镜像换到当前镜像（此前一直未重建的那次升级顺带完成，行为等价）
+- 折中方案：切走后想保留本地引擎入口，把 `MINERU_BASE_URL` 相关 env 保留即可随时切回
+
+### 4.4 本地开发测试（bellm 转发）
+
+本仓库代码在开发机上直连研发中心网关测试（**不需要也不存在「先过本地 mineru」的中转**——`BellmLoader` 内置 `trust_env=False`，已消化本机 Clash 代理坑）：
+
+```powershell
+# 方式一：库函数直跑（Windows，仓库 venv）
+$env:MINERU_ENGINE='bellm'; $env:MINERU_BELLM_AUTH='Basic <凭证>'
+D:/github/document2chunk/.venv/Scripts/python.exe -c "from mineru2doc import convert; print(convert(open(r'某.pdf','rb').read(), image_dir='imgs')[:300])"
+
+# 方式二：CLI（load() 读同一组 env）
+$env:MINERU_ENGINE='bellm'; $env:MINERU_BELLM_AUTH='Basic <凭证>'
+D:/github/document2chunk/.venv/Scripts/python.exe -m mineru2doc convert 某.pdf -o out.md
+
+# 方式三：纯网关层连通性（不经本仓库代码）
+D:/github/document2chunk/.venv/Scripts/python.exe test_mineru_gateway.py --pdf 某.pdf
+```
+
+> 真实部署（112 或目标服务器）与本机测试是**同一条链路**：都是服务/脚本内部直连
+> `128.23.74.3:9091`。区别只是跑在哪台机器，无任何额外中转层。
 
 ## 5. 接口验证（六步，全部有实测基准）
 
